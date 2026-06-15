@@ -45,7 +45,7 @@ interface SimulationStore {
   setSimulationStep: (step: number) => void;
   advanceSimulation: (deltaTime: number) => void;
 
-  moveTower: (id: string, x: number, y: number) => void;
+  moveTower: (id: string, x: number, y: number, recalculate?: boolean) => void;
 }
 
 export const useSimulationStore = create<SimulationStore>((set, get) => ({
@@ -93,10 +93,9 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
       towers: [...state.towers, newTower],
       isAddingTower: false,
       selectedTowerId: newTower.id,
-      paths: [],
-      blindSpots: [],
-      towerDelays: [],
+      simulation: { ...state.simulation, status: 'idle', currentStep: 0, currentTime: 0 },
     }));
+    get().calculatePaths();
   },
 
   updateTower: (id: string, updates: Partial<BeaconTower>) => {
@@ -104,12 +103,10 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
       const towers = state.towers.map((t) => (t.id === id ? { ...t, ...updates } : t));
       return {
         towers,
-        paths: [],
-        blindSpots: [],
-        towerDelays: [],
         simulation: { ...state.simulation, status: 'idle', currentStep: 0, currentTime: 0 },
       };
     });
+    get().calculatePaths();
   },
 
   deleteTower: (id: string) => {
@@ -120,12 +117,10 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
         selectedTowerId: state.selectedTowerId === id ? null : state.selectedTowerId,
         startTowerId: state.startTowerId === id ? null : state.startTowerId,
         endTowerId: state.endTowerId === id ? null : state.endTowerId,
-        paths: [],
-        blindSpots: [],
-        towerDelays: [],
         simulation: { ...state.simulation, status: 'idle', currentStep: 0, currentTime: 0 },
       };
     });
+    get().calculatePaths();
   },
 
   selectTower: (id: string | null) => {
@@ -135,35 +130,33 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
   setStartTower: (id: string | null) => {
     set((state) => ({
       startTowerId: id,
-      paths: [],
-      blindSpots: [],
-      towerDelays: [],
       simulation: { ...state.simulation, status: 'idle', currentStep: 0, currentTime: 0 },
     }));
+    get().calculatePaths();
   },
 
   setEndTower: (id: string | null) => {
     set((state) => ({
       endTowerId: id,
-      paths: [],
-      blindSpots: [],
-      towerDelays: [],
       simulation: { ...state.simulation, status: 'idle', currentStep: 0, currentTime: 0 },
     }));
+    get().calculatePaths();
   },
 
   setWeather: (weather: Weather) => {
     set((state) => ({
       weather,
-      paths: [],
-      blindSpots: [],
-      towerDelays: [],
       simulation: { ...state.simulation, status: 'idle', currentStep: 0, currentTime: 0 },
     }));
+    get().calculatePaths();
   },
 
   setEnemyLevel: (level: EnemyLevel) => {
-    set({ enemyLevel: level });
+    set((state) => ({
+      enemyLevel: level,
+      simulation: { ...state.simulation, status: 'idle', currentStep: 0, currentTime: 0 },
+    }));
+    get().calculatePaths();
   },
 
   setIsAddingTower: (isAdding: boolean) => {
@@ -171,14 +164,14 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
   },
 
   calculatePaths: () => {
-    const { towers, startTowerId, endTowerId, weather } = get();
+    const { towers, startTowerId, endTowerId, weather, enemyLevel } = get();
 
     if (!startTowerId || !endTowerId) {
       set({ paths: [], blindSpots: [], towerDelays: [], selectedPathId: null });
       return;
     }
 
-    const adjacency = buildAdjacencyList(towers, weather.visibilityFactor);
+    const adjacency = buildAdjacencyList(towers, weather.visibilityFactor, enemyLevel.delayFactor);
     const paths = findMultiplePaths(startTowerId, endTowerId, adjacency, 3);
     const blindSpots = findBlindSpots(towers, startTowerId, adjacency);
     const towerDelays = analyzeTowerDelays(towers, paths, 5);
@@ -296,9 +289,10 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
 
     if (!currentTower) return;
 
+    const effectiveDelay = currentTower.signalDelay * state.enemyLevel.delayFactor;
     const newTime = currentTime + deltaTime;
 
-    if (newTime >= currentTower.signalDelay) {
+    if (newTime >= effectiveDelay) {
       const nextStep = currentStep + 1;
       const nextTowerId = selectedPath.towers[nextStep];
 
@@ -306,14 +300,14 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
         simulation: {
           ...state.simulation,
           currentStep: nextStep,
-          currentTime: newTime - currentTower.signalDelay,
+          currentTime: newTime - effectiveDelay,
           activeTowers: [...activeTowers, nextTowerId],
           signalProgress: nextStep / (selectedPath.towers.length - 1),
         },
       }));
     } else {
       const progress = currentStep / (selectedPath.towers.length - 1);
-      const stepProgress = newTime / currentTower.signalDelay;
+      const stepProgress = newTime / effectiveDelay;
       const totalProgress = progress + stepProgress / (selectedPath.towers.length - 1);
 
       set((state) => ({
@@ -326,16 +320,18 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
     }
   },
 
-  moveTower: (id: string, x: number, y: number) => {
+  moveTower: (id: string, x: number, y: number, recalculate: boolean = true) => {
     set((state) => {
       const towers = state.towers.map((t) => (t.id === id ? { ...t, x, y } : t));
       return {
         towers,
-        paths: [],
-        blindSpots: [],
-        towerDelays: [],
-        simulation: { ...state.simulation, status: 'idle', currentStep: 0, currentTime: 0 },
+        simulation: recalculate
+          ? { ...state.simulation, status: 'idle', currentStep: 0, currentTime: 0 }
+          : state.simulation,
       };
     });
+    if (recalculate) {
+      get().calculatePaths();
+    }
   },
 }));

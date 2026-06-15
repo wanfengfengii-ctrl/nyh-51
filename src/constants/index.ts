@@ -45,6 +45,7 @@ export const ENEMY_LEVELS: EnemyLevel[] = [
     signalType: 'smoke',
     priority: 1,
     description: '小股敌军侦察，一炷烟',
+    delayFactor: 1.2,
   },
   {
     id: 'small',
@@ -52,6 +53,7 @@ export const ENEMY_LEVELS: EnemyLevel[] = [
     signalType: 'smoke',
     priority: 2,
     description: '百人以下敌军，两炷烟',
+    delayFactor: 1.0,
   },
   {
     id: 'medium',
@@ -59,6 +61,7 @@ export const ENEMY_LEVELS: EnemyLevel[] = [
     signalType: 'both',
     priority: 3,
     description: '千人以下敌军，三炷烟+火炬',
+    delayFactor: 0.8,
   },
   {
     id: 'large',
@@ -66,6 +69,7 @@ export const ENEMY_LEVELS: EnemyLevel[] = [
     signalType: 'fire',
     priority: 4,
     description: '万人以上敌军，持续烽火',
+    delayFactor: 0.6,
   },
 ];
 

@@ -423,6 +423,10 @@ export function MapCanvas({ width = 800, height = 600 }: MapCanvasProps) {
           sprite.x = newX;
           sprite.y = newY;
         }
+
+        moveTower(draggingTowerRef.current, newX, newY, false);
+        drawLines();
+        drawRanges();
       }
     };
 
@@ -430,7 +434,7 @@ export function MapCanvas({ width = 800, height = 600 }: MapCanvasProps) {
       if (draggingTowerRef.current) {
         const sprite = towerSpritesRef.current.get(draggingTowerRef.current);
         if (sprite) {
-          moveTower(draggingTowerRef.current, sprite.x, sprite.y);
+          moveTower(draggingTowerRef.current, sprite.x, sprite.y, true);
         }
         draggingTowerRef.current = null;
       }
@@ -446,7 +450,7 @@ export function MapCanvas({ width = 800, height = 600 }: MapCanvasProps) {
       stage.off('pointerup', handlePointerUp);
       stage.off('pointerupoutside', handlePointerUp);
     };
-  }, [moveTower, width, height]);
+  }, [moveTower, width, height, drawLines, drawRanges]);
 
   useEffect(() => {
     if (!containerRef.current || !appRef.current) return;

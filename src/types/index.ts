@@ -24,6 +24,7 @@ export interface EnemyLevel {
   signalType: 'smoke' | 'fire' | 'both';
   priority: number;
   description: string;
+  delayFactor: number;
 }
 
 export interface SignalPath {

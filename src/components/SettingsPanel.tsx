@@ -55,6 +55,7 @@ export function EnemyLevelPanel() {
   return (
     <Card shadow="sm" p="md" radius="md" withBorder>
       <Text fw={600} size="lg" mb="md">敌情等级</Text>
+      <Text size="xs" c="dimmed" mb="sm">等级越高，传递速度越快</Text>
 
       <Radio.Group value={enemyLevel.id} onChange={(value) => {
         const level = ENEMY_LEVELS.find((l) => l.id === value);
@@ -71,9 +72,14 @@ export function EnemyLevelPanel() {
                   </Group>
                   <Text size="xs" c="dimmed">{level.description}</Text>
                 </div>
-                <Badge color={level.priority <= 2 ? 'green' : level.priority === 3 ? 'yellow' : 'red'}>
-                  {level.priority}级
-                </Badge>
+                <Stack gap={4} align="flex-end">
+                  <Badge color={level.priority <= 2 ? 'green' : level.priority === 3 ? 'yellow' : 'red'}>
+                    {level.priority}级
+                  </Badge>
+                  <Badge color="blue" variant="light">
+                    速度 ×{(1 / level.delayFactor).toFixed(2)}
+                  </Badge>
+                </Stack>
               </Group>
             </Radio.Card>
           ))}

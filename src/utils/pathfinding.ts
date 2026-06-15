@@ -24,7 +24,8 @@ export function canTransmit(
 
 export function buildAdjacencyList(
   towers: BeaconTower[],
-  visibilityFactor: number
+  visibilityFactor: number,
+  delayFactor: number = 1.0
 ): Map<string, { towerId: string; distance: number; delay: number }[]> {
   const adjacency = new Map<string, { towerId: string; distance: number; delay: number }[]>();
 
@@ -39,8 +40,8 @@ export function buildAdjacencyList(
 
       if (canTransmit(towerA, towerB, visibilityFactor)) {
         const distance = getDistance(towerA.x, towerA.y, towerB.x, towerB.y);
-        const delayAB = towerB.signalDelay;
-        const delayBA = towerA.signalDelay;
+        const delayAB = towerB.signalDelay * delayFactor;
+        const delayBA = towerA.signalDelay * delayFactor;
 
         adjacency.get(towerA.id)?.push({
           towerId: towerB.id,
