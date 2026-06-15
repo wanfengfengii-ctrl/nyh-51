@@ -46,6 +46,9 @@ export const ENEMY_LEVELS: EnemyLevel[] = [
     priority: 1,
     description: '小股敌军侦察，一炷烟',
     delayFactor: 1.2,
+    smokeCount: 1,
+    fireIntensity: 0,
+    pathStrategy: 'fastest',
   },
   {
     id: 'small',
@@ -54,6 +57,9 @@ export const ENEMY_LEVELS: EnemyLevel[] = [
     priority: 2,
     description: '百人以下敌军，两炷烟',
     delayFactor: 1.0,
+    smokeCount: 2,
+    fireIntensity: 0,
+    pathStrategy: 'fastest',
   },
   {
     id: 'medium',
@@ -62,6 +68,9 @@ export const ENEMY_LEVELS: EnemyLevel[] = [
     priority: 3,
     description: '千人以下敌军，三炷烟+火炬',
     delayFactor: 0.8,
+    smokeCount: 3,
+    fireIntensity: 1,
+    pathStrategy: 'mostReliable',
   },
   {
     id: 'large',
@@ -70,8 +79,36 @@ export const ENEMY_LEVELS: EnemyLevel[] = [
     priority: 4,
     description: '万人以上敌军，持续烽火',
     delayFactor: 0.6,
+    smokeCount: 0,
+    fireIntensity: 3,
+    pathStrategy: 'redundant',
   },
 ];
+
+export const ENEMY_COLORS = [
+  '#ef4444',
+  '#f97316',
+  '#eab308',
+  '#22c55e',
+  '#3b82f6',
+  '#8b5cf6',
+  '#ec4899',
+  '#06b6d4',
+];
+
+export const WEATHER_CHANGE_INTERVAL = 30;
+export const WEATHER_TRANSITION_DURATION = 5;
+
+export const GARRISON_DISPATCH_TIME = 3;
+export const GARRISON_MIN_REMAINING = 2;
+
+export const TOWER_FAILURE_PROBABILITY = 0.02;
+export const TOWER_RECOVERY_TIME = 10;
+
+export const SNAPSHOT_INTERVAL = 2;
+
+export const SIGNAL_CONFLICT_DISTANCE = 100;
+export const SIGNAL_MERGE_TIME_WINDOW = 5;
 
 export const DEFAULT_TOWER_CONFIG = {
   visualRange: 200,

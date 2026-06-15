@@ -136,6 +136,83 @@ export function findShortestPath(
   };
 }
 
+export function calculatePathReliability(
+  path: string[],
+  towers: BeaconTower[],
+  _adjacency: Map<string, { towerId: string; distance: number; delay: number }[]>
+): number {
+  if (path.length < 2) return 0;
+
+  let minReliability = 1;
+  let totalReliability = 0;
+
+  for (let i = 0; i < path.length; i++) {
+    const towerId = path[i];
+    const tower = towers.find(t => t.id === towerId);
+    if (!tower || !tower.isActive || tower.isDisabled) return 0;
+
+    const garrisonReliability = Math.min(1, tower.garrisonCount / Math.max(1, tower.baseGarrisonCount));
+    const delayReliability = Math.max(0.5, 1 - (tower.signalDelay - 2) * 0.1);
+    const towerReliability = garrisonReliability * 0.6 + delayReliability * 0.4;
+
+    minReliability = Math.min(minReliability, towerReliability);
+    totalReliability += towerReliability;
+  }
+
+  const avgReliability = totalReliability / path.length;
+  const redundancyBonus = path.length > 3 ? 0.1 : 0;
+
+  return Math.min(1, avgReliability * 0.7 + minReliability * 0.3 + redundancyBonus);
+}
+
+export function findPathByStrategy(
+  startId: string,
+  endId: string,
+  adjacency: Map<string, { towerId: string; distance: number; delay: number }[]>,
+  towers: BeaconTower[],
+  strategy: 'fastest' | 'shortest' | 'mostReliable' | 'redundant',
+  maxPaths: number = 3
+): SignalPath[] {
+  const allPaths = findMultiplePaths(startId, endId, adjacency, Math.max(5, maxPaths));
+  
+  if (allPaths.length === 0) return [];
+
+  const pathsWithMetrics = allPaths.map(path => ({
+    ...path,
+    reliability: calculatePathReliability(path.towers, towers, adjacency),
+    stationCount: path.towers.length - 1,
+  }));
+
+  let sortedPaths: typeof pathsWithMetrics;
+
+  switch (strategy) {
+    case 'fastest':
+      sortedPaths = [...pathsWithMetrics].sort((a, b) => a.totalTime - b.totalTime);
+      break;
+    case 'shortest':
+      sortedPaths = [...pathsWithMetrics].sort((a, b) => a.stationCount - b.stationCount);
+      break;
+    case 'mostReliable':
+      sortedPaths = [...pathsWithMetrics].sort((a, b) => b.reliability - a.reliability);
+      break;
+    case 'redundant':
+      sortedPaths = [...pathsWithMetrics].sort((a, b) => {
+        const reliabilityScore = b.reliability - a.reliability;
+        const stationScore = b.stationCount - a.stationCount;
+        return reliabilityScore * 0.7 + stationScore * 0.3;
+      });
+      break;
+    default:
+      sortedPaths = pathsWithMetrics;
+  }
+
+  return sortedPaths.slice(0, maxPaths).map((p, i) => ({
+    ...p,
+    id: `path-${i}`,
+    isOptimal: i === 0,
+  }));
+}
+
 export function findMultiplePaths(
   startId: string,
   endId: string,
@@ -153,6 +230,7 @@ export function findMultiplePaths(
     totalTime: shortestPath.totalTime,
     totalDistance: shortestPath.totalDistance,
     isOptimal: true,
+    reliability: 0.8,
   });
 
   const candidates: { path: string[]; totalTime: number; totalDistance: number }[] = [];
@@ -220,6 +298,7 @@ export function findMultiplePaths(
       totalTime: candidates[i].totalTime,
       totalDistance: candidates[i].totalDistance,
       isOptimal: false,
+      reliability: 0.7,
     });
   }
 
@@ -252,11 +331,11 @@ export function findBlindSpots(
 
   towers.forEach((tower) => {
     if (!tower.isActive) {
-      blindSpots.push({ towerId: tower.id, reason: '烽火台未启用' });
+      blindSpots.push({ towerId: tower.id, reason: '烽火台未启用', firstDetected: 0 });
     } else if (tower.garrisonCount <= 0) {
-      blindSpots.push({ towerId: tower.id, reason: '无人驻守' });
+      blindSpots.push({ towerId: tower.id, reason: '无人驻守', firstDetected: 0 });
     } else if (!reachable.has(tower.id)) {
-      blindSpots.push({ towerId: tower.id, reason: '信号无法到达' });
+      blindSpots.push({ towerId: tower.id, reason: '信号无法到达', firstDetected: 0 });
     }
   });
 
@@ -288,6 +367,7 @@ export function analyzeTowerDelays(
       towerId,
       delay,
       isSevere: delay >= severeThreshold,
+      missionCount: 0,
     });
   });
 

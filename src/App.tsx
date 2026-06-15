@@ -8,6 +8,8 @@ import {
   SimpleGrid,
   ScrollArea,
   Stack,
+  Tabs,
+  Modal,
 } from '@mantine/core';
 import { Notifications, notifications } from '@mantine/notifications';
 import { MapCanvas } from './components/MapCanvas';
@@ -17,11 +19,16 @@ import { SimulationPanel } from './components/SimulationPanel';
 import { PathInfoPanel, AnalysisPanel } from './components/AnalysisPanel';
 import { DataCharts } from './components/DataCharts';
 import { Toolbar } from './components/Toolbar';
+import { EnemySourcesPanel } from './components/EnemySourcesPanel';
+import { GarrisonPanel } from './components/GarrisonPanel';
+import { DynamicWeatherPanel } from './components/DynamicWeatherPanel';
+import { HistoryReplayPanel } from './components/HistoryReplayPanel';
+import { EvaluationPanel } from './components/EvaluationPanel';
 import { useSimulationStore } from './store/useSimulationStore';
 import { BeaconTower } from './types';
 
 function App() {
-  const { isAddingTower, towers } = useSimulationStore();
+  const { isAddingTower, towers, missions, blindSpots, showEvaluation, setShowEvaluation, evaluationResult, resetSimulation } = useSimulationStore();
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 500 });
   const sampleLoadedRef = useRef(false);
 
@@ -47,13 +54,15 @@ function App() {
     sampleLoadedRef.current = true;
 
     const sampleTowers: Omit<BeaconTower, 'id'>[] = [
-      { x: 80, y: 150, code: 'FT-001', name: '烽火台一号', visualRange: 250, garrisonCount: 15, signalDelay: 2, isActive: true },
-      { x: 230, y: 100, code: 'FT-002', name: '烽火台二号', visualRange: 250, garrisonCount: 12, signalDelay: 3, isActive: true },
-      { x: 380, y: 120, code: 'FT-003', name: '烽火台三号', visualRange: 250, garrisonCount: 10, signalDelay: 2.5, isActive: true },
-      { x: 520, y: 90, code: 'FT-004', name: '烽火台四号', visualRange: 200, garrisonCount: 8, signalDelay: 4, isActive: true },
-      { x: 260, y: 250, code: 'FT-005', name: '烽火台五号', visualRange: 200, garrisonCount: 0, signalDelay: 2, isActive: true },
-      { x: 420, y: 280, code: 'FT-006', name: '烽火台六号', visualRange: 200, garrisonCount: 10, signalDelay: 3, isActive: true },
-      { x: 120, y: 320, code: 'FT-007', name: '烽火台七号', visualRange: 180, garrisonCount: 5, signalDelay: 5, isActive: true },
+      { x: 80, y: 150, code: 'FT-001', name: '烽火台一号', visualRange: 250, garrisonCount: 15, baseGarrisonCount: 15, signalDelay: 2, isActive: true },
+      { x: 230, y: 100, code: 'FT-002', name: '烽火台二号', visualRange: 250, garrisonCount: 12, baseGarrisonCount: 12, signalDelay: 3, isActive: true },
+      { x: 380, y: 120, code: 'FT-003', name: '烽火台三号', visualRange: 250, garrisonCount: 10, baseGarrisonCount: 10, signalDelay: 2.5, isActive: true },
+      { x: 520, y: 90, code: 'FT-004', name: '烽火台四号', visualRange: 200, garrisonCount: 8, baseGarrisonCount: 8, signalDelay: 4, isActive: true },
+      { x: 260, y: 250, code: 'FT-005', name: '烽火台五号', visualRange: 200, garrisonCount: 0, baseGarrisonCount: 10, signalDelay: 2, isActive: true },
+      { x: 420, y: 280, code: 'FT-006', name: '烽火台六号', visualRange: 200, garrisonCount: 10, baseGarrisonCount: 10, signalDelay: 3, isActive: true },
+      { x: 120, y: 320, code: 'FT-007', name: '烽火台七号', visualRange: 180, garrisonCount: 5, baseGarrisonCount: 5, signalDelay: 5, isActive: true },
+      { x: 600, y: 200, code: 'FT-008', name: '烽火台八号', visualRange: 220, garrisonCount: 12, baseGarrisonCount: 12, signalDelay: 2.5, isActive: true },
+      { x: 680, y: 350, code: 'FT-009', name: '烽火台九号', visualRange: 200, garrisonCount: 8, baseGarrisonCount: 8, signalDelay: 3, isActive: true },
     ];
 
     const newTowers: BeaconTower[] = sampleTowers.map((t, index) => ({
@@ -63,15 +72,12 @@ function App() {
 
     useSimulationStore.setState({
       towers: newTowers,
-      startTowerId: 'sample-0',
-      endTowerId: 'sample-3',
     });
 
     setTimeout(() => {
-      useSimulationStore.getState().calculatePaths();
       notifications.show({
         title: '示例数据已加载',
-        message: '已添加 7 座示例烽火台，点击开始模拟查看效果',
+        message: '已添加 9 座示例烽火台，请添加敌情源开始模拟',
         color: 'green',
       });
     }, 100);
@@ -82,6 +88,20 @@ function App() {
       addSampleTowers();
     }
   }, [towers.length]);
+
+  const handleCloseEvaluation = () => {
+    setShowEvaluation(false);
+  };
+
+  const handleReset = () => {
+    resetSimulation();
+    setShowEvaluation(false);
+    notifications.show({
+      title: '已重置',
+      message: '系统已重置，可开始新的模拟',
+      color: 'blue',
+    });
+  };
 
   return (
     <MantineProvider defaultColorScheme="light">
@@ -94,10 +114,10 @@ function App() {
           <Group h="100%" px="md" justify="space-between">
             <Group>
               <Text fw={700} size="xl" c="#8b4513">
-                🏯 烽火台信号接力推演器
+                🏯 多源敌情下的自适应烽火台联防调度系统
               </Text>
-              <Badge color="yellow" variant="light">
-                古代信息传递模拟
+              <Badge color="orange" variant="light">
+                古代军事通信智能模拟
               </Badge>
             </Group>
             <Toolbar />
@@ -119,7 +139,7 @@ function App() {
                   }}
                 >
                   <Group justify="space-between" mb="xs">
-                    <Text fw={600}>地图画布</Text>
+                    <Text fw={600}>联防地图</Text>
                     {isAddingTower && (
                       <Badge color="green" variant="filled">
                         点击地图添加烽火台
@@ -133,23 +153,89 @@ function App() {
 
               <ScrollArea type="auto" style={{ height: '100%' }}>
                 <Stack gap="md" pr="xs">
-                  <TowerList />
-                  <TowerEditor />
-                  <WeatherPanel />
+                  <Tabs defaultValue="towers" variant="pills">
+                    <Tabs.List grow>
+                      <Tabs.Tab value="towers">烽火台</Tabs.Tab>
+                      <Tabs.Tab value="enemy">敌情源</Tabs.Tab>
+                      <Tabs.Tab value="garrison">驻军</Tabs.Tab>
+                    </Tabs.List>
+                    <Tabs.Panel value="towers" pt="xs">
+                      <Stack gap="md">
+                        <TowerList />
+                        <TowerEditor />
+                      </Stack>
+                    </Tabs.Panel>
+                    <Tabs.Panel value="enemy" pt="xs">
+                      <EnemySourcesPanel />
+                    </Tabs.Panel>
+                    <Tabs.Panel value="garrison" pt="xs">
+                      <GarrisonPanel />
+                    </Tabs.Panel>
+                  </Tabs>
+                  <Tabs defaultValue="weather" variant="pills">
+                    <Tabs.List grow>
+                      <Tabs.Tab value="weather">天气</Tabs.Tab>
+                      <Tabs.Tab value="settings">设置</Tabs.Tab>
+                    </Tabs.List>
+                    <Tabs.Panel value="weather" pt="xs">
+                      <Stack gap="md">
+                        <DynamicWeatherPanel />
+                        <WeatherPanel />
+                      </Stack>
+                    </Tabs.Panel>
+                    <Tabs.Panel value="settings" pt="xs">
+                      <EnemyLevelPanel />
+                    </Tabs.Panel>
+                  </Tabs>
                 </Stack>
               </ScrollArea>
 
               <ScrollArea type="auto" style={{ height: '100%' }}>
                 <Stack gap="md" pr="xs">
-                  <SimulationPanel />
-                  <EnemyLevelPanel />
-                  <PathInfoPanel />
-                  <AnalysisPanel />
+                  <Tabs defaultValue="simulation" variant="pills">
+                    <Tabs.List grow>
+                      <Tabs.Tab value="simulation">模拟控制</Tabs.Tab>
+                      <Tabs.Tab value="replay">历史回放</Tabs.Tab>
+                      <Tabs.Tab value="analysis">分析</Tabs.Tab>
+                    </Tabs.List>
+                    <Tabs.Panel value="simulation" pt="xs">
+                      <Stack gap="md">
+                        <SimulationPanel />
+                        <PathInfoPanel />
+                      </Stack>
+                    </Tabs.Panel>
+                    <Tabs.Panel value="replay" pt="xs">
+                      <HistoryReplayPanel />
+                    </Tabs.Panel>
+                    <Tabs.Panel value="analysis" pt="xs">
+                      <AnalysisPanel />
+                    </Tabs.Panel>
+                  </Tabs>
                 </Stack>
               </ScrollArea>
             </SimpleGrid>
           </div>
         </AppShell.Main>
+
+        <Modal
+          opened={showEvaluation}
+          onClose={handleCloseEvaluation}
+          title="📊 综合评估报告"
+          size="xl"
+          centered
+          scrollAreaComponent={ScrollArea.Autosize}
+        >
+          {evaluationResult && (
+            <EvaluationPanel 
+              result={evaluationResult} 
+              towers={towers}
+              missions={missions}
+              blindSpots={blindSpots}
+              onClose={handleCloseEvaluation}
+              onReset={handleReset}
+            />
+          )}
+        </Modal>
       </AppShell>
     </MantineProvider>
   );

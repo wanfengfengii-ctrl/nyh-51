@@ -27,6 +27,8 @@ export function TowerList() {
     endTowerId,
     setStartTower,
     setEndTower,
+    dispatches,
+    missions,
   } = useSimulationStore();
 
   const sortedTowers = useMemo(() => {
@@ -43,11 +45,37 @@ export function TowerList() {
   };
 
   const getTowerStatusBadge = (tower: typeof towers[0]) => {
+    if (tower.isDisabled) return <Badge color="red">故障</Badge>;
     if (!tower.isActive) return <Badge color="gray">未启用</Badge>;
     if (tower.garrisonCount <= 0) return <Badge color="red">无人驻守</Badge>;
     if (tower.id === startTowerId) return <Badge color="green">起点</Badge>;
     if (tower.id === endTowerId) return <Badge color="blue">终点</Badge>;
+    
+    const activeMission = missions.find(m => 
+      m.status === 'running' && m.activeTowers.includes(tower.id)
+    );
+    if (activeMission) return <Badge color="orange">传递中</Badge>;
+    
+    const incomingDispatch = dispatches.find(d => 
+      d.toTowerId === tower.id && d.status !== 'completed'
+    );
+    if (incomingDispatch) return <Badge color="green">增援中</Badge>;
+    
+    const outgoingDispatch = dispatches.find(d => 
+      d.fromTowerId === tower.id && d.status !== 'completed'
+    );
+    if (outgoingDispatch) return <Badge color="yellow">派出中</Badge>;
+    
     return <Badge color="green">正常</Badge>;
+  };
+
+  const getGarrisonInfo = (tower: typeof towers[0]) => {
+    if (tower.garrisonCount < tower.baseGarrisonCount) {
+      return <Text size="xs" c="red">👥 {tower.garrisonCount}/{tower.baseGarrisonCount} (兵力不足)</Text>;
+    } else if (tower.garrisonCount > tower.baseGarrisonCount) {
+      return <Text size="xs" c="green">👥 {tower.garrisonCount}/{tower.baseGarrisonCount} (增防)</Text>;
+    }
+    return <Text size="xs" c="dimmed">👥 {tower.garrisonCount}/{tower.baseGarrisonCount}</Text>;
   };
 
   return (
@@ -68,21 +96,28 @@ export function TowerList() {
               style={{
                 cursor: 'pointer',
                 borderColor:
-                  selectedTowerId === tower.id ? '#4169e1' : undefined,
+                  selectedTowerId === tower.id ? '#4169e1' : 
+                  tower.isDisabled ? '#ef4444' : undefined,
                 backgroundColor:
-                  selectedTowerId === tower.id ? '#e6f0ff' : undefined,
+                  selectedTowerId === tower.id ? '#e6f0ff' : 
+                  tower.isDisabled ? '#fef2f2' : undefined,
+                opacity: tower.isDisabled ? 0.7 : 1,
               }}
               onClick={() => selectTower(tower.id)}
             >
               <Group justify="space-between" wrap="nowrap">
-                <div>
-                  <Group gap="xs">
-                    <Text fw={500} size="sm">{tower.code}</Text>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <Group gap="xs" wrap="nowrap">
+                    <Text fw={500} size="sm" truncate>{tower.code}</Text>
                     {getTowerStatusBadge(tower)}
                   </Group>
-                  <Text size="xs" c="dimmed">{tower.name}</Text>
+                  <Text size="xs" c="dimmed" truncate>{tower.name}</Text>
+                  {getGarrisonInfo(tower)}
+                  {tower.isDisabled && tower.disabledReason && (
+                    <Text size="xs" c="red">⚠️ {tower.disabledReason}</Text>
+                  )}
                 </div>
-                <Group gap={4}>
+                <Group gap={4} wrap="nowrap">
                   <Tooltip label="设为起点">
                     <ActionIcon
                       size="sm"
@@ -173,13 +208,18 @@ export function TowerEditor() {
     );
   }
 
+  const getStatusBadge = () => {
+    if (selectedTower.isDisabled) return <Badge color="red">故障中</Badge>;
+    if (!selectedTower.isActive) return <Badge color="gray">已停用</Badge>;
+    if (selectedTower.garrisonCount <= 0) return <Badge color="red">无人驻守</Badge>;
+    return <Badge color="green">运行中</Badge>;
+  };
+
   return (
     <Card shadow="sm" p="md" radius="md" withBorder>
       <Group justify="space-between" mb="md">
         <Text fw={600} size="lg">烽火台详情</Text>
-        <Badge color={selectedTower.isActive ? 'green' : 'gray'}>
-          {selectedTower.isActive ? '运行中' : '已停用'}
-        </Badge>
+        {getStatusBadge()}
       </Group>
 
       <Stack gap="md">
@@ -209,7 +249,10 @@ export function TowerEditor() {
         <NumberInput
           label="驻守人数"
           value={selectedTower.garrisonCount}
-          onChange={(val) => handleUpdate({ garrisonCount: Number(val) || 0 })}
+          onChange={(val) => handleUpdate({ 
+            garrisonCount: Number(val) || 0,
+            baseGarrisonCount: Number(val) || 0,
+          })}
           min={0}
           max={100}
           step={1}
@@ -230,9 +273,25 @@ export function TowerEditor() {
           onChange={(e) => handleUpdate({ isActive: e.currentTarget.checked })}
         />
 
+        {selectedTower.isDisabled && (
+          <Text size="xs" c="red">
+            ⚠️ 故障原因：{selectedTower.disabledReason}
+            {selectedTower.disabledUntil && `，预计恢复时间：${selectedTower.disabledUntil.toFixed(1)}s`}
+          </Text>
+        )}
+
         <Group grow>
           <Text size="sm">位置 X: {Math.round(selectedTower.x)}</Text>
           <Text size="sm">位置 Y: {Math.round(selectedTower.y)}</Text>
+        </Group>
+
+        <Group grow>
+          <Text size="sm">
+            视距范围: {Math.round(selectedTower.visualRange)}
+          </Text>
+          <Text size="sm">
+            基准驻军: {selectedTower.baseGarrisonCount}人
+          </Text>
         </Group>
       </Stack>
     </Card>
