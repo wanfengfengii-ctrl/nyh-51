@@ -24,11 +24,12 @@ import { GarrisonPanel } from './components/GarrisonPanel';
 import { DynamicWeatherPanel } from './components/DynamicWeatherPanel';
 import { HistoryReplayPanel } from './components/HistoryReplayPanel';
 import { EvaluationPanel } from './components/EvaluationPanel';
+import { WarningCenter } from './components/WarningCenter';
 import { useSimulationStore } from './store/useSimulationStore';
 import { BeaconTower } from './types';
 
 function App() {
-  const { isAddingTower, towers, missions, blindSpots, showEvaluation, setShowEvaluation, evaluationResult, resetSimulation } = useSimulationStore();
+  const { isAddingTower, towers, missions, blindSpots, showEvaluation, setShowEvaluation, showWarningCenter, setShowWarningCenter, evaluationResult, resetSimulation } = useSimulationStore();
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 500 });
   const sampleLoadedRef = useRef(false);
 
@@ -235,6 +236,22 @@ function App() {
               onReset={handleReset}
             />
           )}
+        </Modal>
+
+        <Modal
+          opened={showWarningCenter}
+          onClose={() => setShowWarningCenter(false)}
+          title={null}
+          size="85%"
+          centered
+          withCloseButton={false}
+          padding={0}
+          styles={{
+            content: { maxHeight: '90vh' },
+            body: { height: '90vh', padding: 0, overflow: 'hidden' },
+          }}
+        >
+          <WarningCenter onClose={() => setShowWarningCenter(false)} />
         </Modal>
       </AppShell>
     </MantineProvider>

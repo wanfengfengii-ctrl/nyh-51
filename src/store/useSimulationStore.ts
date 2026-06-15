@@ -15,6 +15,8 @@ import {
   HistoryEvent,
   StateSnapshot,
   EvaluationResult,
+  Warning,
+  ComprehensiveAssessment,
 } from '../types';
 import { WEATHER_TYPES, ENEMY_LEVELS, DEFAULT_TOWER_CONFIG, WEATHER_CHANGE_INTERVAL, SNAPSHOT_INTERVAL, TOWER_FAILURE_PROBABILITY, TOWER_RECOVERY_TIME } from '../constants';
 import {
@@ -53,6 +55,13 @@ import {
   findNearestSnapshot,
   calculateEvaluationResult,
 } from '../utils/evaluationEngine';
+import {
+  generateWarnings,
+  updateWarningEvolution,
+  calculateComprehensiveAssessment,
+  acknowledgeWarning as ackWarning,
+  resolveWarning as resWarning,
+} from '../utils/warningEngine';
 
 interface SimulationStore {
   towers: BeaconTower[];
@@ -69,6 +78,9 @@ interface SimulationStore {
   historyEvents: HistoryEvent[];
   snapshots: StateSnapshot[];
   evaluationResult: EvaluationResult | null;
+  warnings: Warning[];
+  lastAssessment: ComprehensiveAssessment | null;
+  showWarningCenter: boolean;
   simulation: SimulationState;
   paths: SignalPath[];
   selectedPathId: string | null;
@@ -88,6 +100,10 @@ interface SimulationStore {
   setDynamicWeather: (enabled: boolean) => void;
   setAutoDispatch: (enabled: boolean) => void;
   setShowEvaluation: (show: boolean) => void;
+  setShowWarningCenter: (show: boolean) => void;
+  runWarningAssessment: () => void;
+  acknowledgeWarning: (warningId: string) => void;
+  resolveWarning: (warningId: string) => void;
   setStartTower: (id: string | null) => void;
   setEndTower: (id: string | null) => void;
   setEnemyLevel: (level: EnemyLevel) => void;
@@ -138,6 +154,9 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
   historyEvents: [],
   snapshots: [],
   evaluationResult: null,
+  warnings: [],
+  lastAssessment: null,
+  showWarningCenter: false,
   simulation: {
     status: 'idle',
     currentStep: 0,
@@ -267,6 +286,57 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
 
   setShowEvaluation: (show: boolean) => {
     set({ showEvaluation: show });
+  },
+
+  setShowWarningCenter: (show: boolean) => {
+    set({ showWarningCenter: show });
+  },
+
+  runWarningAssessment: () => {
+    const state = get();
+    const ctx = {
+      towers: state.towers,
+      missions: state.missions,
+      enemySources: state.enemySources,
+      dispatches: state.dispatches,
+      weather: state.weather,
+      historyEvents: state.historyEvents,
+      snapshots: state.snapshots,
+      blindSpots: state.blindSpots,
+      currentTime: state.simulation.globalTime,
+    };
+
+    const updatedWarnings = state.warnings.map(w => updateWarningEvolution(w, ctx));
+    const newWarnings = generateWarnings(ctx, updatedWarnings);
+    const allWarnings = [...updatedWarnings, ...newWarnings];
+    const assessment = calculateComprehensiveAssessment(ctx, allWarnings);
+
+    set({
+      warnings: allWarnings,
+      lastAssessment: assessment,
+    });
+  },
+
+  acknowledgeWarning: (warningId: string) => {
+    const state = get();
+    const warning = state.warnings.find(w => w.id === warningId);
+    if (!warning) return;
+
+    const updated = ackWarning(warning, state.simulation.globalTime);
+    set({
+      warnings: state.warnings.map(w => w.id === warningId ? updated : w),
+    });
+  },
+
+  resolveWarning: (warningId: string) => {
+    const state = get();
+    const warning = state.warnings.find(w => w.id === warningId);
+    if (!warning) return;
+
+    const updated = resWarning(warning, state.simulation.globalTime);
+    set({
+      warnings: state.warnings.map(w => w.id === warningId ? updated : w),
+    });
   },
 
   setStartTower: (id: string | null) => {
@@ -641,6 +711,8 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
       historyEvents: [],
       snapshots: [],
       evaluationResult: null,
+      warnings: [],
+      lastAssessment: null,
       showEvaluation: false,
       paths: [],
       selectedPathId: null,
@@ -965,6 +1037,10 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
 
     if (newGlobalTime % SNAPSHOT_INTERVAL < deltaTime) {
       get().takeSnapshot();
+    }
+
+    if (newGlobalTime % 5 < deltaTime) {
+      get().runWarningAssessment();
     }
 
     set((state) => ({

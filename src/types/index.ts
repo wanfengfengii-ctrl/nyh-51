@@ -175,3 +175,122 @@ export interface EvaluationResult {
   pathStrategyEffectiveness: { strategy: string; successRate: number; avgTime: number }[];
   recommendations: string[];
 }
+
+export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
+
+export type WarningStatus = 'active' | 'acknowledged' | 'resolved' | 'expired';
+
+export type WarningCategory =
+  | 'enemy_threat'
+  | 'weather_risk'
+  | 'garrison_insufficient'
+  | 'tower_failure'
+  | 'transmission_risk'
+  | 'path_bottleneck'
+  | 'blind_spot';
+
+export interface TriggerReason {
+  type: string;
+  description: string;
+  value: number;
+  threshold: number;
+}
+
+export interface AffectedScope {
+  towerIds: string[];
+  regionName?: string;
+  enemySourceIds?: string[];
+  missionIds?: string[];
+}
+
+export interface DispatchSuggestion {
+  id: string;
+  fromTowerId: string;
+  toTowerId: string;
+  count: number;
+  estimatedDuration: number;
+  reason: string;
+  expectedImprovement: string;
+}
+
+export interface Warning {
+  id: string;
+  category: WarningCategory;
+  riskLevel: RiskLevel;
+  title: string;
+  summary: string;
+  status: WarningStatus;
+  createdAt: number;
+  updatedAt: number;
+  expiresAt?: number;
+  acknowledgedAt?: number;
+  resolvedAt?: number;
+  triggerReasons: TriggerReason[];
+  affectedScope: AffectedScope;
+  suggestions: DispatchSuggestion[];
+  expectedImprovement: string;
+  evolution: WarningEvolutionSnapshot[];
+}
+
+export interface WarningEvolutionSnapshot {
+  timestamp: number;
+  riskLevel: RiskLevel;
+  status: WarningStatus;
+  summary: string;
+  snapshotId?: string;
+}
+
+export interface RegionHeatData {
+  regionId: string;
+  regionName: string;
+  bounds: { minX: number; maxX: number; minY: number; maxY: number };
+  heatScore: number;
+  towerCount: number;
+  activeEnemyCount: number;
+  failureRate: number;
+  avgTransmissionTime: number;
+  towerIds: string[];
+}
+
+export interface FaultyTowerStats {
+  towerId: string;
+  towerCode: string;
+  towerName: string;
+  failureCount: number;
+  totalDowntime: number;
+  avgRecoveryTime: number;
+  lastFailureAt?: number;
+  failureReasons: { reason: string; count: number }[];
+  affectedMissionCount: number;
+  riskScore: number;
+}
+
+export interface FailurePrediction {
+  towerId: string;
+  towerCode: string;
+  timeWindowStart: number;
+  timeWindowEnd: number;
+  failureProbability: number;
+  confidence: number;
+  contributingFactors: string[];
+}
+
+export interface ComprehensiveAssessment {
+  overallRiskLevel: RiskLevel;
+  overallRiskScore: number;
+  totalActiveWarnings: number;
+  criticalWarnings: number;
+  highWarnings: number;
+  mediumWarnings: number;
+  lowWarnings: number;
+  generatedAt: number;
+  assessmentSummary: string;
+  topRecommendations: string[];
+  factorBreakdown: {
+    enemyThreat: number;
+    weatherImpact: number;
+    garrisonStatus: number;
+    networkHealth: number;
+    historicalPerformance: number;
+  };
+}
