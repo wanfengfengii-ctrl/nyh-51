@@ -15,17 +15,25 @@ export function createStateSnapshot(
   timestamp: number,
   towers: BeaconTower[],
   missions: SignalMission[],
+  enemySources: EnemySource[],
   weather: any,
   dispatches: GarrisonDispatch[],
-  activePaths: any[]
+  activePaths: any[],
+  blindSpots: BlindSpot[],
+  towerDelays: any[],
+  selectedPathId: string | null
 ): StateSnapshot {
   return {
     timestamp,
     towers: JSON.parse(JSON.stringify(towers)),
     missions: JSON.parse(JSON.stringify(missions)),
+    enemySources: JSON.parse(JSON.stringify(enemySources)),
     weather: { ...weather },
     dispatches: JSON.parse(JSON.stringify(dispatches)),
     activePaths: JSON.parse(JSON.stringify(activePaths)),
+    blindSpots: JSON.parse(JSON.stringify(blindSpots)),
+    towerDelays: JSON.parse(JSON.stringify(towerDelays)),
+    selectedPathId,
   };
 }
 

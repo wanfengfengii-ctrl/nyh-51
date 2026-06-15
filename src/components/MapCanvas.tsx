@@ -321,61 +321,68 @@ export function MapCanvas({ width = 800, height = 600 }: MapCanvasProps) {
     const adjacency: Map<string, Set<string>> = new Map();
     state.towers.forEach((t) => adjacency.set(t.id, new Set()));
 
-    const activePathEdges = new Map<string, { color: number; width: number; alpha: number }>();
+    const pathEdges = new Map<string, { color: number; width: number; alpha: number; priority: number }>();
+
+    const addEdge = (from: string, to: string, style: { color: number; width: number; alpha: number; priority: number }) => {
+      const key = `${from}-${to}`;
+      const reverseKey = `${to}-${from}`;
+      const existing = pathEdges.get(key) || pathEdges.get(reverseKey);
+      
+      if (!existing || style.priority > existing.priority) {
+        pathEdges.set(key, style);
+      }
+    };
+
+    state.paths.forEach((path) => {
+      const color = path.enemySourceId ? getSourceColor(path.enemySourceId) : COLORS.line.alternative;
+      const isSelected = path.id === state.selectedPathId;
+      
+      for (let i = 0; i < path.towers.length - 1; i++) {
+        const from = path.towers[i];
+        const to = path.towers[i + 1];
+        
+        if (isSelected) {
+          addEdge(from, to, {
+            color: COLORS.line.optimal,
+            width: 5,
+            alpha: 1,
+            priority: 100,
+          });
+        } else {
+          addEdge(from, to, {
+            color,
+            width: 2,
+            alpha: 0.4,
+            priority: 10,
+          });
+        }
+      }
+    });
 
     state.missions.forEach(mission => {
       if (mission.status !== 'running' && mission.status !== 'completed') return;
       
       const color = getSourceColor(mission.enemySourceId);
       const path = mission.path.towers;
+      const isSelected = mission.path.id === state.selectedPathId;
 
       for (let i = 0; i < path.length - 1; i++) {
         const from = path[i];
         const to = path[i + 1];
-        const key = `${from}-${to}`;
-        const reverseKey = `${to}-${from}`;
-
-        if (!activePathEdges.has(key) && !activePathEdges.has(reverseKey)) {
-          activePathEdges.set(key, {
+        
+        if (isSelected) {
+          addEdge(from, to, {
+            color: COLORS.line.optimal,
+            width: 5,
+            alpha: 1,
+            priority: 100,
+          });
+        } else {
+          addEdge(from, to, {
             color,
             width: mission.status === 'completed' ? 2 : 3,
             alpha: mission.status === 'completed' ? 0.5 : 0.8,
-          });
-        }
-      }
-    });
-
-    const selectedPath = state.paths.find((p) => p.id === state.selectedPathId);
-    if (selectedPath) {
-      for (let i = 0; i < selectedPath.towers.length - 1; i++) {
-        const from = selectedPath.towers[i];
-        const to = selectedPath.towers[i + 1];
-        const key = `${from}-${to}`;
-        const reverseKey = `${to}-${from}`;
-
-        if (!activePathEdges.has(key) && !activePathEdges.has(reverseKey)) {
-          activePathEdges.set(key, {
-            color: COLORS.line.optimal,
-            width: 4,
-            alpha: 1,
-          });
-        }
-      }
-    }
-
-    const altPaths = state.paths.filter((p) => p.id !== state.selectedPathId);
-    altPaths.forEach((path) => {
-      for (let i = 0; i < path.towers.length - 1; i++) {
-        const from = path.towers[i];
-        const to = path.towers[i + 1];
-        const key = `${from}-${to}`;
-        const reverseKey = `${to}-${from}`;
-
-        if (!activePathEdges.has(key) && !activePathEdges.has(reverseKey)) {
-          activePathEdges.set(key, {
-            color: COLORS.line.alternative,
-            width: 2,
-            alpha: 0.4,
+            priority: mission.status === 'running' ? 50 : 30,
           });
         }
       }
@@ -402,7 +409,7 @@ export function MapCanvas({ width = 800, height = 600 }: MapCanvasProps) {
           const edgeKey = `${towerA.id}-${towerB.id}`;
           const reverseKey = `${towerB.id}-${towerA.id}`;
           
-          const edgeStyle = activePathEdges.get(edgeKey) || activePathEdges.get(reverseKey);
+          const edgeStyle = pathEdges.get(edgeKey) || pathEdges.get(reverseKey);
 
           let lineColor = COLORS.line.normal;
           let lineWidth = 1;

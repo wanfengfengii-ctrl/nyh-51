@@ -438,14 +438,18 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
   },
 
   takeSnapshot: () => {
-    const { towers, missions, weather, dispatches, paths, simulation } = get();
+    const { towers, missions, enemySources, weather, dispatches, paths, simulation, blindSpots, towerDelays, selectedPathId } = get();
     const snapshot = createStateSnapshot(
       simulation.globalTime,
       towers,
       missions,
+      enemySources,
       weather,
       dispatches,
-      paths
+      paths,
+      blindSpots,
+      towerDelays,
+      selectedPathId
     );
 
     set((state) => ({
@@ -522,21 +526,16 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
   },
 
   startSimulation: () => {
-    const { missions, enemySources, weather, simulation } = get();
+    const { missions, enemySources, weather } = get();
 
     if (missions.length === 0) {
       return;
     }
 
-    get().addHistoryEvent('simulation_start', {}, '联防调度模拟开始');
-
     const updatedMissions = missions.map(m => {
       const source = enemySources.find(s => s.id === m.enemySourceId);
       if (source?.status !== 'merged') {
-        get().addHistoryEvent('signal_start', 
-          { missionId: m.id, sourceId: m.enemySourceId }, 
-          `信号传递开始：${source?.name || '未知敌情'}`);
-        return { ...m, status: 'running' as const, startTime: simulation.globalTime };
+        return { ...m, status: 'running' as const, startTime: 0 };
       }
       return m;
     });
@@ -546,7 +545,7 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
       status: s.status === 'pending' ? 'active' as const : s.status,
     }));
 
-    const forecast = getWeatherForecast(5, weather, simulation.globalTime, WEATHER_CHANGE_INTERVAL);
+    const forecast = getWeatherForecast(5, weather, 0, WEATHER_CHANGE_INTERVAL);
 
     set((state) => ({
       simulation: {
@@ -564,6 +563,17 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
       snapshots: [],
       evaluationResult: null,
     }));
+
+    get().addHistoryEvent('simulation_start', {}, '联防调度模拟开始');
+    
+    updatedMissions.forEach(m => {
+      const source = updatedSources.find(s => s.id === m.enemySourceId);
+      if (source?.status !== 'merged' && m.status === 'running') {
+        get().addHistoryEvent('signal_start', 
+          { missionId: m.id, sourceId: m.enemySourceId }, 
+          `信号传递开始：${source?.name || '未知敌情'}`);
+      }
+    });
 
     get().takeSnapshot();
   },
@@ -1019,12 +1029,17 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
       set((state) => ({
         towers: snapshot.towers,
         missions: snapshot.missions,
+        enemySources: snapshot.enemySources,
         weather: snapshot.weather,
         dispatches: snapshot.dispatches,
         paths: snapshot.activePaths,
+        blindSpots: snapshot.blindSpots,
+        towerDelays: snapshot.towerDelays,
+        selectedPathId: snapshot.selectedPathId,
         simulation: {
           ...state.simulation,
           replayTime: time,
+          globalTime: snapshot.timestamp,
         },
       }));
     }

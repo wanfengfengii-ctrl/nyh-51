@@ -146,9 +146,13 @@ export interface StateSnapshot {
   timestamp: number;
   towers: BeaconTower[];
   missions: SignalMission[];
+  enemySources: EnemySource[];
   weather: Weather;
   dispatches: GarrisonDispatch[];
   activePaths: SignalPath[];
+  blindSpots: BlindSpot[];
+  towerDelays: TowerDelayInfo[];
+  selectedPathId: string | null;
 }
 
 export interface EvaluationResult {
