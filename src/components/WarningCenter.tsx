@@ -33,6 +33,10 @@ import {
 import { ThreatHeatMap } from './ThreatHeatMap';
 import { FaultyTowerAnalysis } from './FaultyTowerAnalysis';
 import { WarningDetailModal } from './WarningDetailModal';
+import { TheaterSituationPanel } from './TheaterSituationPanel';
+import { WarningLinkagePanel } from './WarningLinkagePanel';
+import { WarningReplayPanel } from './WarningReplayPanel';
+import { TheaterReportPanel } from './TheaterReportPanel';
 
 const statusFilterOptions: { value: WarningStatus | 'all'; label: string }[] = [
   { value: 'all', label: '全部' },
@@ -172,8 +176,8 @@ export function WarningCenter({ onClose }: WarningCenterProps) {
             🚨
           </ThemeIcon>
           <div>
-            <Text fw={700} size="xl" c="dark">综合研判预警中心</Text>
-            <Text size="sm" c="dimmed">多源数据融合分析 · 智能风险预警 · 辅助指挥决策</Text>
+            <Text fw={700} size="xl" c="dark">烽火台战区预警与联动指挥中心</Text>
+            <Text size="sm" c="dimmed">多源融合研判 · 战区态势感知 · 联动预警处置 · 综合指挥调度</Text>
           </div>
         </Group>
         <Group>
@@ -201,7 +205,11 @@ export function WarningCenter({ onClose }: WarningCenterProps) {
       <Tabs value={activeTab} onChange={setActiveTab}>
         <Tabs.List px="md" pt="xs">
           <Tabs.Tab value="overview" leftSection="📊">态势总览</Tabs.Tab>
+          <Tabs.Tab value="theater" leftSection="⚔️">战区态势</Tabs.Tab>
           <Tabs.Tab value="warnings" leftSection="⚠️">预警列表</Tabs.Tab>
+          <Tabs.Tab value="linkage" leftSection="🔗">联动机制</Tabs.Tab>
+          <Tabs.Tab value="replay" leftSection="⏪">预警回放</Tabs.Tab>
+          <Tabs.Tab value="report" leftSection="📋">综合报告</Tabs.Tab>
           <Tabs.Tab value="heatmap" leftSection="🗺️">威胁热度</Tabs.Tab>
           <Tabs.Tab value="faulty" leftSection="🏚️">故障台站</Tabs.Tab>
         </Tabs.List>
@@ -528,6 +536,22 @@ export function WarningCenter({ onClose }: WarningCenterProps) {
 
         <Tabs.Panel value="heatmap" pt="md" px="md" pb="md">
           <ThreatHeatMap />
+        </Tabs.Panel>
+
+        <Tabs.Panel value="theater" pt="md" px="md" pb="md">
+          <TheaterSituationPanel />
+        </Tabs.Panel>
+
+        <Tabs.Panel value="linkage" pt="md" px="md" pb="md">
+          <WarningLinkagePanel />
+        </Tabs.Panel>
+
+        <Tabs.Panel value="replay" pt="md" px="md" pb="md">
+          <WarningReplayPanel />
+        </Tabs.Panel>
+
+        <Tabs.Panel value="report" pt="md" px="md" pb="md">
+          <TheaterReportPanel />
         </Tabs.Panel>
 
         <Tabs.Panel value="faulty" pt="md" px="md" pb="md">

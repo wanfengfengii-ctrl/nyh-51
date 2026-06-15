@@ -115,10 +115,10 @@ function App() {
           <Group h="100%" px="md" justify="space-between">
             <Group>
               <Text fw={700} size="xl" c="#8b4513">
-                🏯 多源敌情下的自适应烽火台联防调度系统
+                🏯 烽火台战区预警与联动指挥中心
               </Text>
-              <Badge color="orange" variant="light">
-                古代军事通信智能模拟
+              <Badge color="red" variant="light">
+                多源融合 · 联动预警 · 综合指挥
               </Badge>
             </Group>
             <Toolbar />

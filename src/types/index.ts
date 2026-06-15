@@ -294,3 +294,162 @@ export interface ComprehensiveAssessment {
     historicalPerformance: number;
   };
 }
+
+export interface TheaterZone {
+  id: string;
+  name: string;
+  code: string;
+  bounds: { minX: number; maxX: number; minY: number; maxY: number };
+  towerIds: string[];
+  riskScore: number;
+  riskLevel: RiskLevel;
+  activeEnemyCount: number;
+  failedMissionCount: number;
+  disabledTowerCount: number;
+  lowGarrisonCount: number;
+  avgTransmissionTime: number;
+  failureHotspots: FailureHotspot[];
+  bottleneckTowers: string[];
+  garrisonWeakBelt: GarrisonWeakBelt[];
+}
+
+export interface FailureHotspot {
+  towerId: string;
+  towerCode: string;
+  failureCount: number;
+  affectedMissionIds: string[];
+  failureRate: number;
+}
+
+export interface GarrisonWeakBelt {
+  towerIds: string[];
+  avgGarrisonRatio: number;
+  direction: string;
+}
+
+export interface MissionFailurePrediction {
+  missionId: string;
+  enemySourceId: string;
+  failureProbability: number;
+  confidence: number;
+  contributingFactors: MissionFailureFactor[];
+  criticalPathTowers: string[];
+  recommendedActions: RecommendedAction[];
+}
+
+export interface MissionFailureFactor {
+  factorType: 'tower_risk' | 'weather_impact' | 'garrison_low' | 'path_overload' | 'enemy_pressure' | 'historical_failure';
+  description: string;
+  severity: number;
+  relatedIds: string[];
+}
+
+export interface RecommendedAction {
+  actionType: 'dispatch_garrison' | 'switch_route' | 'add_relay' | 'merge_warnings';
+  description: string;
+  targetIds: string[];
+  expectedImprovement: string;
+  priority: number;
+}
+
+export interface LinkageTrigger {
+  id: string;
+  warningId: string;
+  triggerLevel: RiskLevel;
+  triggerCategory: WarningCategory;
+  triggeredAt: number;
+  actions: LinkageAction[];
+  soundAlert: boolean;
+  popupShown: boolean;
+  autoDismissed: boolean;
+  dismissedAt?: number;
+}
+
+export interface LinkageAction {
+  id: string;
+  type: 'popup' | 'sound' | 'dispatch' | 'route_switch' | 'relay_add';
+  description: string;
+  status: 'pending' | 'executed' | 'failed' | 'skipped';
+  executedAt?: number;
+  result?: string;
+}
+
+export interface DisposalRecord {
+  id: string;
+  warningId: string;
+  actionType: 'garrison_dispatch' | 'route_switch' | 'relay_add';
+  executedAt: number;
+  preRiskScore: number;
+  postRiskScore: number;
+  improvementDelta: number;
+  improved: boolean;
+  details: string;
+  relatedWarningIds: string[];
+}
+
+export interface WarningReplayEvent {
+  id: string;
+  timestamp: number;
+  eventType: 'warning_generated' | 'warning_upgraded' | 'warning_downgraded' | 'warning_acknowledged' | 'warning_resolved' | 'warning_expired' | 'linkage_triggered' | 'disposal_executed' | 'disposal_evaluated';
+  warningId: string;
+  warningTitle: string;
+  warningCategory: WarningCategory;
+  riskLevel: RiskLevel;
+  previousRiskLevel?: RiskLevel;
+  description: string;
+  relatedData: Record<string, unknown>;
+}
+
+export interface TheaterReport {
+  generatedAt: number;
+  periodStart: number;
+  periodEnd: number;
+  overallRiskLevel: RiskLevel;
+  overallRiskScore: number;
+  theaterZoneSummaries: TheaterZoneSummary[];
+  responseEfficiency: ResponseEfficiency;
+  disposalSuccessRate: number;
+  totalDisposals: number;
+  successfulDisposals: number;
+  criticalFailureChains: FailureChain[];
+  optimizationSuggestions: OptimizationSuggestion[];
+}
+
+export interface TheaterZoneSummary {
+  zoneId: string;
+  zoneName: string;
+  riskScore: number;
+  riskLevel: RiskLevel;
+  warningCount: number;
+  avgResponseTime: number;
+  disposalCount: number;
+  disposalSuccessRate: number;
+  dominantCategory: WarningCategory;
+}
+
+export interface ResponseEfficiency {
+  avgAckTime: number;
+  avgResolveTime: number;
+  criticalResponseRate: number;
+  highResponseRate: number;
+  overallResponseRate: number;
+}
+
+export interface FailureChain {
+  chainId: string;
+  towerIds: string[];
+  missionIds: string[];
+  warningIds: string[];
+  rootCause: string;
+  impactScore: number;
+  description: string;
+}
+
+export interface OptimizationSuggestion {
+  id: string;
+  category: 'garrison' | 'route' | 'relay' | 'structure';
+  priority: number;
+  description: string;
+  expectedBenefit: string;
+  affectedZoneIds: string[];
+}

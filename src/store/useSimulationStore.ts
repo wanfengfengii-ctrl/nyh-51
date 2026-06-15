@@ -17,6 +17,11 @@ import {
   EvaluationResult,
   Warning,
   ComprehensiveAssessment,
+  TheaterZone,
+  LinkageTrigger,
+  DisposalRecord,
+  WarningReplayEvent,
+  TheaterReport,
 } from '../types';
 import { WEATHER_TYPES, ENEMY_LEVELS, DEFAULT_TOWER_CONFIG, WEATHER_CHANGE_INTERVAL, SNAPSHOT_INTERVAL, TOWER_FAILURE_PROBABILITY, TOWER_RECOVERY_TIME } from '../constants';
 import {
@@ -61,6 +66,11 @@ import {
   calculateComprehensiveAssessment,
   acknowledgeWarning as ackWarning,
   resolveWarning as resWarning,
+  calculateTheaterZones,
+  createLinkageTrigger,
+  evaluateDisposal,
+  generateWarningReplayEvents,
+  generateTheaterReport,
 } from '../utils/warningEngine';
 
 interface SimulationStore {
@@ -82,6 +92,11 @@ interface SimulationStore {
   lastAssessment: ComprehensiveAssessment | null;
   showWarningCenter: boolean;
   lastNewWarningIds: string[];
+  theaterZones: TheaterZone[];
+  linkageTriggers: LinkageTrigger[];
+  disposalRecords: DisposalRecord[];
+  warningReplayEvents: WarningReplayEvent[];
+  theaterReport: TheaterReport | null;
   simulation: SimulationState;
   paths: SignalPath[];
   selectedPathId: string | null;
@@ -109,6 +124,11 @@ interface SimulationStore {
   setEndTower: (id: string | null) => void;
   setEnemyLevel: (level: EnemyLevel) => void;
   setSimulationStep: (step: number) => void;
+
+  executeDisposal: (warningId: string, actionType: 'garrison_dispatch' | 'route_switch' | 'relay_add', details: string) => void;
+  dismissLinkage: (triggerId: string) => void;
+  generateTheaterReportAction: () => void;
+  refreshTheaterZones: () => void;
 
   addEnemySource: (level: EnemyLevel, startTowerId: string, endTowerId: string) => void;
   removeEnemySource: (id: string) => void;
@@ -159,6 +179,11 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
   lastAssessment: null,
   showWarningCenter: false,
   lastNewWarningIds: [],
+  theaterZones: [],
+  linkageTriggers: [],
+  disposalRecords: [],
+  warningReplayEvents: [],
+  theaterReport: null,
   simulation: {
     status: 'idle',
     currentStep: 0,
@@ -314,10 +339,35 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
     const assessment = calculateComprehensiveAssessment(ctx, allWarnings);
     const newWarningIds = newWarnings.map(w => w.id);
 
+    const theaterZones = calculateTheaterZones(ctx);
+
+    const newLinkageTriggers: LinkageTrigger[] = [];
+    for (const newWarning of newWarnings) {
+      const existingTrigger = state.linkageTriggers.find(
+        lt => lt.warningId === newWarning.id
+      );
+      if (!existingTrigger) {
+        const trigger = createLinkageTrigger(newWarning, ctx);
+        if (trigger) {
+          newLinkageTriggers.push(trigger);
+        }
+      }
+    }
+    const allLinkageTriggers = [...state.linkageTriggers, ...newLinkageTriggers];
+
+    const replayEvents = generateWarningReplayEvents(
+      allWarnings,
+      allLinkageTriggers,
+      state.disposalRecords,
+    );
+
     set({
       warnings: allWarnings,
       lastAssessment: assessment,
       lastNewWarningIds: newWarningIds,
+      theaterZones,
+      linkageTriggers: allLinkageTriggers,
+      warningReplayEvents: replayEvents,
     });
   },
 
@@ -362,6 +412,106 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
         currentStep: step,
       },
     }));
+  },
+
+  executeDisposal: (warningId: string, actionType: 'garrison_dispatch' | 'route_switch' | 'relay_add', details: string) => {
+    const state = get();
+    const warning = state.warnings.find(w => w.id === warningId);
+    if (!warning) return;
+
+    const ctx = {
+      towers: state.towers,
+      missions: state.missions,
+      enemySources: state.enemySources,
+      dispatches: state.dispatches,
+      weather: state.weather,
+      historyEvents: state.historyEvents,
+      snapshots: state.snapshots,
+      blindSpots: state.blindSpots,
+      currentTime: state.simulation.globalTime,
+    };
+
+    const preRiskScore = warning.riskLevel === 'critical' ? 85 : warning.riskLevel === 'high' ? 60 : warning.riskLevel === 'medium' ? 35 : 10;
+
+    const record: DisposalRecord = {
+      id: uuidv4(),
+      warningId,
+      actionType,
+      executedAt: state.simulation.globalTime,
+      preRiskScore,
+      postRiskScore: preRiskScore,
+      improvementDelta: 0,
+      improved: false,
+      details,
+      relatedWarningIds: [warningId],
+    };
+
+    const evaluatedRecord = evaluateDisposal(record, state.warnings, ctx);
+
+    get().addHistoryEvent('garrison_dispatch',
+      { warningId, actionType, improved: evaluatedRecord.improved },
+      `处置执行：${details} - ${evaluatedRecord.improved ? '有效' : '需持续观察'}`
+    );
+
+    set((state) => ({
+      disposalRecords: [...state.disposalRecords, evaluatedRecord],
+    }));
+
+    setTimeout(() => {
+      get().runWarningAssessment();
+    }, 100);
+  },
+
+  dismissLinkage: (triggerId: string) => {
+    set((state) => ({
+      linkageTriggers: state.linkageTriggers.map(lt =>
+        lt.id === triggerId
+          ? { ...lt, autoDismissed: true, dismissedAt: state.simulation.globalTime }
+          : lt
+      ),
+    }));
+  },
+
+  generateTheaterReportAction: () => {
+    const state = get();
+    const ctx = {
+      towers: state.towers,
+      missions: state.missions,
+      enemySources: state.enemySources,
+      dispatches: state.dispatches,
+      weather: state.weather,
+      historyEvents: state.historyEvents,
+      snapshots: state.snapshots,
+      blindSpots: state.blindSpots,
+      currentTime: state.simulation.globalTime,
+    };
+
+    const report = generateTheaterReport(
+      state.warnings,
+      state.disposalRecords,
+      state.theaterZones,
+      ctx
+    );
+
+    set({ theaterReport: report });
+  },
+
+  refreshTheaterZones: () => {
+    const state = get();
+    const ctx = {
+      towers: state.towers,
+      missions: state.missions,
+      enemySources: state.enemySources,
+      dispatches: state.dispatches,
+      weather: state.weather,
+      historyEvents: state.historyEvents,
+      snapshots: state.snapshots,
+      blindSpots: state.blindSpots,
+      currentTime: state.simulation.globalTime,
+    };
+
+    const theaterZones = calculateTheaterZones(ctx);
+    set({ theaterZones });
   },
 
   addEnemySource: (level: EnemyLevel, startTowerId: string, endTowerId: string) => {
@@ -723,6 +873,11 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
       selectedPathId: null,
       blindSpots: [],
       towerDelays: [],
+      theaterZones: [],
+      linkageTriggers: [],
+      disposalRecords: [],
+      warningReplayEvents: [],
+      theaterReport: null,
     }));
     get().calculatePaths();
   },
