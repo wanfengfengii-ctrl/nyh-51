@@ -15,7 +15,8 @@ import {
   SimpleGrid,
   Progress,
 } from '@mantine/core';
-import { BeaconTower, Warning } from '../types';
+import { BeaconTower } from '../types';
+import { useSimulationStore } from '../store/useSimulationStore';
 import {
   getRiskColor,
   getRiskLabel,
@@ -26,7 +27,7 @@ import {
 } from '../utils/warningEngine';
 
 interface WarningDetailModalProps {
-  warning: Warning;
+  warningId: string;
   towers: BeaconTower[];
   onClose: () => void;
   onAcknowledge: (warningId: string) => void;
@@ -35,13 +36,21 @@ interface WarningDetailModalProps {
 }
 
 export function WarningDetailModal({
-  warning,
+  warningId,
   towers,
   onClose,
   onAcknowledge,
   onResolve,
   onExecuteDispatch,
 }: WarningDetailModalProps) {
+  const warning = useSimulationStore(state =>
+    state.warnings.find(w => w.id === warningId) || null
+  );
+
+  if (!warning) {
+    return null;
+  }
+
   const formatTime = (timestamp: number) => {
     const mins = Math.floor(timestamp / 60);
     const secs = Math.floor(timestamp % 60);

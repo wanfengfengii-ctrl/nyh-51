@@ -81,6 +81,7 @@ interface SimulationStore {
   warnings: Warning[];
   lastAssessment: ComprehensiveAssessment | null;
   showWarningCenter: boolean;
+  lastNewWarningIds: string[];
   simulation: SimulationState;
   paths: SignalPath[];
   selectedPathId: string | null;
@@ -157,6 +158,7 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
   warnings: [],
   lastAssessment: null,
   showWarningCenter: false,
+  lastNewWarningIds: [],
   simulation: {
     status: 'idle',
     currentStep: 0,
@@ -310,10 +312,12 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
     const newWarnings = generateWarnings(ctx, updatedWarnings);
     const allWarnings = [...updatedWarnings, ...newWarnings];
     const assessment = calculateComprehensiveAssessment(ctx, allWarnings);
+    const newWarningIds = newWarnings.map(w => w.id);
 
     set({
       warnings: allWarnings,
       lastAssessment: assessment,
+      lastNewWarningIds: newWarningIds,
     });
   },
 
@@ -713,6 +717,7 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
       evaluationResult: null,
       warnings: [],
       lastAssessment: null,
+      lastNewWarningIds: [],
       showEvaluation: false,
       paths: [],
       selectedPathId: null,

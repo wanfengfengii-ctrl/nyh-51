@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Card,
   Text,
@@ -21,7 +21,7 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useSimulationStore } from '../store/useSimulationStore';
-import { Warning, WarningStatus, WarningCategory, RiskLevel } from '../types';
+import { WarningStatus, WarningCategory, RiskLevel } from '../types';
 import {
   getRiskColor,
   getRiskLabel,
@@ -61,6 +61,7 @@ export function WarningCenter({ onClose }: WarningCenterProps) {
   const {
     warnings,
     lastAssessment,
+    lastNewWarningIds,
     towers,
     simulation,
     runWarningAssessment,
@@ -73,11 +74,39 @@ export function WarningCenter({ onClose }: WarningCenterProps) {
   const [statusFilter, setStatusFilter] = useState<WarningStatus | 'all'>('all');
   const [categoryFilter, setCategoryFilter] = useState<WarningCategory | 'all'>('all');
   const [riskFilter, setRiskFilter] = useState<RiskLevel | 'all'>('all');
-  const [selectedWarning, setSelectedWarning] = useState<Warning | null>(null);
+  const [selectedWarningId, setSelectedWarningId] = useState<string | null>(null);
+  const notifiedWarningIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     runWarningAssessment();
   }, [runWarningAssessment]);
+
+  useEffect(() => {
+    if (lastNewWarningIds.length === 0) return;
+
+    lastNewWarningIds.forEach(warningId => {
+      if (notifiedWarningIdsRef.current.has(warningId)) return;
+      notifiedWarningIdsRef.current.add(warningId);
+
+      const warning = warnings.find(w => w.id === warningId);
+      if (!warning) return;
+
+      const isHighPriority = warning.riskLevel === 'critical' || warning.riskLevel === 'high';
+      if (!isHighPriority) return;
+
+      notifications.show({
+        id: warning.id,
+        title: `${getRiskIcon(warning.riskLevel)} ${warning.title}`,
+        message: warning.summary,
+        color: getRiskColor(warning.riskLevel),
+        autoClose: warning.riskLevel === 'critical' ? false : 5000,
+        withCloseButton: true,
+        onClick: () => {
+          setSelectedWarningId(warning.id);
+        },
+      });
+    });
+  }, [lastNewWarningIds, warnings]);
 
   const filteredWarnings = warnings.filter(w => {
     if (statusFilter !== 'all' && w.status !== statusFilter) return false;
@@ -112,9 +141,12 @@ export function WarningCenter({ onClose }: WarningCenterProps) {
 
   const handleExecuteDispatch = (fromTowerId: string, toTowerId: string, count: number) => {
     dispatchGarrison(fromTowerId, toTowerId, count);
+    setTimeout(() => {
+      runWarningAssessment();
+    }, 100);
     notifications.show({
       title: '调度已执行',
-      message: `驻军调度指令已下达`,
+      message: `驻军调度指令已下达，正在重新评估预警状态...`,
       color: 'green',
     });
   };
@@ -292,7 +324,7 @@ export function WarningCenter({ onClose }: WarningCenterProps) {
                           radius="sm"
                           withBorder
                           style={{ cursor: 'pointer' }}
-                          onClick={() => setSelectedWarning(warning)}
+                          onClick={() => setSelectedWarningId(warning.id)}
                         >
                           <Group justify="space-between">
                             <Group gap="xs">
@@ -429,7 +461,7 @@ export function WarningCenter({ onClose }: WarningCenterProps) {
                             <ActionIcon
                               variant="light"
                               color="blue"
-                              onClick={() => setSelectedWarning(warning)}
+                              onClick={() => setSelectedWarningId(warning.id)}
                             >
                               👁️
                             </ActionIcon>
@@ -503,11 +535,11 @@ export function WarningCenter({ onClose }: WarningCenterProps) {
         </Tabs.Panel>
       </Tabs>
 
-      {selectedWarning && (
+      {selectedWarningId && (
         <WarningDetailModal
-          warning={selectedWarning}
+          warningId={selectedWarningId}
           towers={towers}
-          onClose={() => setSelectedWarning(null)}
+          onClose={() => setSelectedWarningId(null)}
           onAcknowledge={handleAcknowledge}
           onResolve={handleResolve}
           onExecuteDispatch={handleExecuteDispatch}
