@@ -1,5 +1,4 @@
 import { create } from 'zustand';
-import { v4 as uuidv4 } from 'uuid';
 import {
   BeaconTower,
   Weather,
@@ -61,17 +60,24 @@ import {
   calculateEvaluationResult,
 } from '../utils/evaluationEngine';
 import {
+  ID,
+  createDomainContext,
+  createWarningContext,
+  createReplayContext,
+  createTheaterContext,
   generateWarnings,
   updateWarningEvolution,
   calculateComprehensiveAssessment,
   acknowledgeWarning as ackWarning,
   resolveWarning as resWarning,
   calculateTheaterZones,
-  createLinkageTrigger,
   evaluateDisposal,
   generateWarningReplayEvents,
   generateTheaterReport,
-} from '../utils/warningEngine';
+  createDisposalRecord,
+  collectNewLinkageTriggers,
+  DomainContext,
+} from '../domain';
 
 interface SimulationStore {
   towers: BeaconTower[];
@@ -160,6 +166,406 @@ interface SimulationStore {
   moveTower: (id: string, x: number, y: number, recalculate?: boolean) => void;
 }
 
+function buildDomainContext(state: SimulationStore): DomainContext {
+  return createDomainContext({
+    towers: state.towers,
+    missions: state.missions,
+    enemySources: state.enemySources,
+    dispatches: state.dispatches,
+    weather: state.weather,
+    historyEvents: state.historyEvents,
+    snapshots: state.snapshots,
+    blindSpots: state.blindSpots,
+    currentTime: state.simulation.globalTime,
+  });
+}
+
+interface AdvanceSimulationState {
+  newGlobalTime: number;
+  towers: BeaconTower[];
+  missions: SignalMission[];
+  dispatches: GarrisonDispatch[];
+  weather: Weather;
+  weatherEvents: WeatherEvent[];
+  enemySources: EnemySource[];
+  needsPathRecalc: boolean;
+  allCompleted: boolean;
+  hasActiveSources: boolean;
+  finalStatus: SimulationState['status'];
+  evaluationResult: EvaluationResult | null;
+  showEvaluation: boolean;
+}
+
+type StageContext = {
+  state: SimulationStore;
+  addHistory: SimulationStore['addHistoryEvent'];
+};
+
+function processDispatchStage(
+  ctx: StageContext,
+  acc: AdvanceSimulationState
+): AdvanceSimulationState {
+  const { dispatches, towers, newGlobalTime } = acc;
+  let updatedTowers = towers;
+  const updatedDispatches = [...dispatches];
+  let needsPathRecalc = false;
+
+  dispatches.forEach((dispatch, index) => {
+    if (dispatch.status === 'pending' || dispatch.status === 'active') {
+      const result = applyDispatchEffect(updatedTowers, dispatch, newGlobalTime);
+      updatedTowers = result.towers;
+      
+      if (result.completed) {
+        updatedDispatches[index] = { ...dispatch, status: 'completed' };
+        needsPathRecalc = true;
+        
+        const fromTower = updatedTowers.find(t => t.id === dispatch.fromTowerId);
+        const toTower = updatedTowers.find(t => t.id === dispatch.toTowerId);
+        ctx.addHistory('garrison_dispatch', 
+          { dispatchId: dispatch.id, completed: true }, 
+          `驻军到达：${fromTower?.code || ''} → ${toTower?.code || ''}`);
+      } else if (dispatch.status === 'pending') {
+        updatedDispatches[index] = { ...dispatch, status: 'active' };
+      }
+    }
+  });
+
+  return { ...acc, towers: updatedTowers, dispatches: updatedDispatches, needsPathRecalc: acc.needsPathRecalc || needsPathRecalc };
+}
+
+function processWeatherStage(
+  ctx: StageContext,
+  acc: AdvanceSimulationState
+): AdvanceSimulationState {
+  if (!ctx.state.isDynamicWeather) return acc;
+
+  const { newGlobalTime, towers, weather, weatherEvents, missions } = acc;
+  let updatedTowers = towers;
+  let updatedWeather = weather;
+  const updatedWeatherEvents = [...weatherEvents];
+  let updatedMissions = missions;
+  let needsPathRecalc = false;
+
+  const prevGlobalTime = ctx.state.simulation.globalTime;
+  const nextWeatherEvent = ctx.state.weatherForecast.find(e => 
+    e.startTime <= newGlobalTime && e.startTime > prevGlobalTime
+  );
+  
+  if (nextWeatherEvent) {
+    const oldWeather = weather;
+    
+    if (oldWeather.visibilityFactor < 0.8) {
+      const oldEvent = weatherEvents.find(e => 
+        e.weather.id === oldWeather.id && e.startTime <= newGlobalTime
+      );
+      if (oldEvent) {
+        updatedTowers = recoverFromWeather(updatedTowers, oldEvent.affectedTowers);
+        oldEvent.affectedTowers.forEach(towerId => {
+          ctx.addHistory('tower_recovered', { towerId }, 
+            `${updatedTowers.find(t => t.id === towerId)?.code || ''} 从天气影响中恢复`);
+        });
+      }
+    }
+
+    const eventWithTowers = createWeatherEvent(
+      nextWeatherEvent.weather,
+      nextWeatherEvent.startTime,
+      nextWeatherEvent.duration,
+      updatedTowers,
+      'automatic'
+    );
+    updatedWeatherEvents.push(eventWithTowers);
+    updatedWeather = nextWeatherEvent.weather;
+
+    if (nextWeatherEvent.weather.visibilityFactor < 0.8) {
+      updatedTowers = applyWeatherEffect(updatedTowers, nextWeatherEvent.weather, eventWithTowers.affectedTowers);
+      eventWithTowers.affectedTowers.forEach(towerId => {
+        const tower = updatedTowers.find(t => t.id === towerId);
+        if (tower?.isDisabled) {
+          ctx.addHistory('tower_disabled', 
+            { towerId, reason: tower.disabledReason }, 
+            `${tower.code} 因天气故障：${tower.disabledReason}`);
+        }
+      });
+    }
+
+    ctx.addHistory('weather_change', 
+      { oldWeather: oldWeather.id, newWeather: updatedWeather.id }, 
+      `天气变化：${oldWeather.name} → ${updatedWeather.name}`);
+
+    const { needRecalc, interrupted } = recalculatePathsOnWeatherChange(
+      updatedMissions, updatedTowers, updatedWeather
+    );
+
+    interrupted.forEach(missionId => {
+      const missionIndex = updatedMissions.findIndex(m => m.id === missionId);
+      if (missionIndex !== -1) {
+        const mission = updatedMissions[missionIndex];
+        const altMission = findAlternativePathForMission(
+          mission, updatedTowers, updatedWeather, buildAdjacencyList
+        );
+        
+        if (altMission) {
+          updatedMissions[missionIndex] = altMission;
+          ctx.addHistory('path_recalculated', 
+            { missionId, oldPath: mission.path.towers, newPath: altMission.path.towers }, 
+            `路径重算：为任务找到备用路线`);
+        } else {
+          updatedMissions[missionIndex] = { ...mission, status: 'failed', failedReason: '天气导致路径中断，无备用路线' };
+          ctx.addHistory('signal_failed', 
+            { missionId, reason: 'weather_interruption' }, 
+            `信号传递失败：天气导致路径中断`);
+        }
+      }
+    });
+
+    needsPathRecalc = needRecalc.length > 0;
+  }
+
+  return {
+    ...acc,
+    towers: updatedTowers,
+    weather: updatedWeather,
+    weatherEvents: updatedWeatherEvents,
+    missions: updatedMissions,
+    needsPathRecalc: acc.needsPathRecalc || needsPathRecalc,
+  };
+}
+
+function processTowerStatusStage(
+  ctx: StageContext,
+  acc: AdvanceSimulationState
+): AdvanceSimulationState {
+  const { newGlobalTime, towers } = acc;
+  const deltaTime = newGlobalTime - ctx.state.simulation.globalTime;
+
+  const updatedTowers = towers.map(tower => {
+    if (tower.isDisabled && tower.disabledUntil && tower.disabledUntil <= newGlobalTime) {
+      ctx.addHistory('tower_recovered', { towerId: tower.id }, 
+        `${tower.code} 恢复正常运行`);
+      return {
+        ...tower,
+        isDisabled: false,
+        disabledReason: undefined,
+        disabledUntil: undefined,
+      };
+    }
+    
+    if (!tower.isDisabled && tower.isActive && tower.garrisonCount > 0) {
+      if (Math.random() < TOWER_FAILURE_PROBABILITY * deltaTime) {
+        const reasons = ['烽火台失火', '士兵突发疾病', '设备损坏', '遭遇小股敌军偷袭'];
+        const reason = reasons[Math.floor(Math.random() * reasons.length)];
+        ctx.addHistory('tower_disabled', 
+          { towerId: tower.id, reason }, 
+          `${tower.code} 故障：${reason}`);
+        return {
+          ...tower,
+          isDisabled: true,
+          disabledReason: reason,
+          disabledUntil: newGlobalTime + TOWER_RECOVERY_TIME,
+        };
+      }
+    }
+    
+    return tower;
+  });
+
+  return { ...acc, towers: updatedTowers };
+}
+
+function processAutoDispatchStage(
+  ctx: StageContext,
+  acc: AdvanceSimulationState
+): AdvanceSimulationState {
+  if (!ctx.state.autoDispatch) return acc;
+
+  const { newGlobalTime, towers, missions, dispatches } = acc;
+  const deltaTime = newGlobalTime - ctx.state.simulation.globalTime;
+  
+  if (newGlobalTime % 10 >= deltaTime) return acc;
+
+  const weakTowers = findWeakTowers(towers, missions);
+  const autoDispatches = findAutoDispatchCandidates(towers, weakTowers, newGlobalTime);
+  const updatedDispatches = [...dispatches];
+  
+  autoDispatches.forEach(dispatch => {
+    const exists = updatedDispatches.some(d => 
+      d.fromTowerId === dispatch.fromTowerId && 
+      d.toTowerId === dispatch.toTowerId &&
+      d.status !== 'completed'
+    );
+    
+    if (!exists) {
+      const fromTower = towers.find(t => t.id === dispatch.fromTowerId);
+      const toTower = towers.find(t => t.id === dispatch.toTowerId);
+      ctx.addHistory('garrison_dispatch', 
+        { dispatchId: dispatch.id, from: dispatch.fromTowerId, to: dispatch.toTowerId, count: dispatch.count, auto: true }, 
+        `自动调度：${fromTower?.code || ''} → ${toTower?.code || ''} (${dispatch.count}人) - ${dispatch.reason}`);
+      updatedDispatches.push(dispatch);
+    }
+  });
+
+  return { ...acc, dispatches: updatedDispatches };
+}
+
+function processMissionProgressStage(
+  ctx: StageContext,
+  acc: AdvanceSimulationState
+): AdvanceSimulationState {
+  const { newGlobalTime, missions, towers, weather, enemySources } = acc;
+  const deltaTime = newGlobalTime - ctx.state.simulation.globalTime;
+  const updatedEnemySources = [...enemySources];
+
+  const updatedMissions = missions.map((mission): SignalMission => {
+    if (mission.status !== 'running') return mission;
+
+    const source = updatedEnemySources.find(s => s.id === mission.enemySourceId);
+    if (!source) return mission;
+
+    const { currentStep, currentTime, activeTowers } = mission;
+    const path = mission.path.towers;
+
+    if (currentStep >= path.length - 1) {
+      ctx.addHistory('signal_complete', 
+        { missionId: mission.id, sourceId: mission.enemySourceId }, 
+        `信号传递完成：${source.name}`);
+      
+      const sourceIndex = updatedEnemySources.findIndex(s => s.id === mission.enemySourceId);
+      if (sourceIndex !== -1) {
+        updatedEnemySources[sourceIndex] = { ...updatedEnemySources[sourceIndex], status: 'completed' };
+      }
+      
+      return {
+        ...mission,
+        status: 'completed',
+        signalProgress: 1,
+        endTime: newGlobalTime,
+      };
+    }
+
+    const currentTowerId = path[currentStep];
+    const currentTower = towers.find(t => t.id === currentTowerId);
+    const nextTowerId = path[currentStep + 1];
+    const nextTower = towers.find(t => t.id === nextTowerId);
+
+    if (!currentTower || !nextTower) return mission;
+
+    if (currentTower.isDisabled || nextTower.isDisabled) {
+      const altMission = findAlternativePathForMission(
+        mission, towers, weather, buildAdjacencyList
+      );
+      
+      if (altMission) {
+        ctx.addHistory('path_recalculated', 
+          { missionId: mission.id, reason: 'tower_disabled' }, 
+          `路径重算：${currentTower.isDisabled ? currentTower.code : nextTower.code} 故障，切换备用路线`);
+        return { ...altMission, interruptions: mission.interruptions + 1 };
+      } else {
+        ctx.addHistory('signal_failed', 
+          { missionId: mission.id, reason: 'tower_failure' }, 
+          `信号传递失败：${currentTower.isDisabled ? currentTower.code : nextTower.code} 故障，无备用路线`);
+        return { ...mission, status: 'failed', failedReason: '中继台故障，无备用路线' };
+      }
+    }
+
+    if (!canTransmit(currentTower, nextTower, weather.visibilityFactor)) {
+      const altMission = findAlternativePathForMission(
+        mission, towers, weather, buildAdjacencyList
+      );
+      
+      if (altMission) {
+        ctx.addHistory('path_recalculated', 
+          { missionId: mission.id, reason: 'out_of_range' }, 
+          `路径重算：${currentTower.code} 无法到达 ${nextTower.code}，切换备用路线`);
+        return { ...altMission, interruptions: mission.interruptions + 1 };
+      } else {
+        ctx.addHistory('signal_failed', 
+          { missionId: mission.id, reason: 'out_of_range' }, 
+          `信号传递失败：超出可视范围，无备用路线`);
+        return { ...mission, status: 'failed', failedReason: '超出可视范围，无备用路线' };
+      }
+    }
+
+    const effectiveDelay = getEffectiveDelay(
+      currentTower.signalDelay,
+      source.level,
+      currentTower.garrisonCount,
+      currentTower.baseGarrisonCount
+    );
+
+    const newTime = currentTime + deltaTime;
+
+    if (newTime >= effectiveDelay) {
+      const nextStep = currentStep + 1;
+      const nextActiveTowers = [...activeTowers, path[nextStep]];
+      
+      ctx.addHistory('signal_reach', 
+        { missionId: mission.id, towerId: path[nextStep] }, 
+        `信号到达：${nextTower.code}`);
+
+      return {
+        ...mission,
+        currentStep: nextStep,
+        currentTime: newTime - effectiveDelay,
+        activeTowers: nextActiveTowers,
+        signalProgress: nextStep / (path.length - 1),
+      };
+    } else {
+      const progress = currentStep / (path.length - 1);
+      const stepProgress = newTime / effectiveDelay;
+      const totalProgress = progress + stepProgress / (path.length - 1);
+
+      return {
+        ...mission,
+        currentTime: newTime,
+        signalProgress: Math.min(1, totalProgress),
+      };
+    }
+  });
+
+  const allCompleted = updatedMissions.every(m => m.status === 'completed' || m.status === 'failed');
+  const hasActiveSources = updatedEnemySources.some(s => s.status === 'active' || s.status === 'pending');
+
+  return {
+    ...acc,
+    missions: updatedMissions,
+    enemySources: updatedEnemySources,
+    allCompleted,
+    hasActiveSources,
+  };
+}
+
+function processCompletionStage(
+  ctx: StageContext,
+  acc: AdvanceSimulationState
+): AdvanceSimulationState {
+  if (!acc.allCompleted || !acc.hasActiveSources) return acc;
+
+  const newGlobalTime = acc.newGlobalTime;
+  ctx.addHistory('simulation_end', {}, '联防调度模拟结束');
+
+  const evaluation = calculateEvaluationResult(
+    newGlobalTime,
+    acc.enemySources,
+    acc.missions,
+    acc.towers,
+    acc.dispatches,
+    acc.weatherEvents,
+    ctx.state.historyEvents,
+    ctx.state.blindSpots,
+    ctx.state.snapshots
+  );
+
+  return {
+    ...acc,
+    finalStatus: 'completed',
+    evaluationResult: evaluation,
+    showEvaluation: true,
+  };
+}
+
+export type { SimulationStore };
+
 export const useSimulationStore = create<SimulationStore>((set, get) => ({
   towers: [],
   selectedTowerId: null,
@@ -215,7 +621,7 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
     const garrison = DEFAULT_TOWER_CONFIG.garrisonCount;
 
     const newTower: BeaconTower = {
-      id: uuidv4(),
+      id: ID.tower(),
       name: `烽火台 ${codeNum}`,
       code,
       x,
@@ -321,45 +727,31 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
 
   runWarningAssessment: () => {
     const state = get();
-    const ctx = {
-      towers: state.towers,
-      missions: state.missions,
-      enemySources: state.enemySources,
-      dispatches: state.dispatches,
-      weather: state.weather,
-      historyEvents: state.historyEvents,
-      snapshots: state.snapshots,
-      blindSpots: state.blindSpots,
-      currentTime: state.simulation.globalTime,
-    };
+    const domainCtx = buildDomainContext(state);
+    const warningCtx = createWarningContext(domainCtx, state.warnings);
 
-    const updatedWarnings = state.warnings.map(w => updateWarningEvolution(w, ctx));
-    const newWarnings = generateWarnings(ctx, updatedWarnings);
+    const updatedWarnings = state.warnings.map(w => updateWarningEvolution(w, domainCtx));
+    const newWarnings = generateWarnings({ ...warningCtx, existingWarnings: updatedWarnings });
     const allWarnings = [...updatedWarnings, ...newWarnings];
-    const assessment = calculateComprehensiveAssessment(ctx, allWarnings);
+    const assessment = calculateComprehensiveAssessment(domainCtx, allWarnings);
     const newWarningIds = newWarnings.map(w => w.id);
 
-    const theaterZones = calculateTheaterZones(ctx);
+    const theaterZones = calculateTheaterZones(domainCtx);
 
-    const newLinkageTriggers: LinkageTrigger[] = [];
-    for (const newWarning of newWarnings) {
-      const existingTrigger = state.linkageTriggers.find(
-        lt => lt.warningId === newWarning.id
-      );
-      if (!existingTrigger) {
-        const trigger = createLinkageTrigger(newWarning, ctx);
-        if (trigger) {
-          newLinkageTriggers.push(trigger);
-        }
-      }
-    }
+    const newLinkageTriggers = collectNewLinkageTriggers(
+      allWarnings,
+      state.linkageTriggers,
+      domainCtx
+    );
     const allLinkageTriggers = [...state.linkageTriggers, ...newLinkageTriggers];
 
-    const replayEvents = generateWarningReplayEvents(
+    const replayCtx = createReplayContext(
+      domainCtx,
       allWarnings,
       allLinkageTriggers,
-      state.disposalRecords,
+      state.disposalRecords
     );
+    const replayEvents = generateWarningReplayEvents(replayCtx);
 
     set({
       warnings: allWarnings,
@@ -419,47 +811,21 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
     const warning = state.warnings.find(w => w.id === warningId);
     if (!warning) return;
 
-    const ctx = {
-      towers: state.towers,
-      missions: state.missions,
-      enemySources: state.enemySources,
-      dispatches: state.dispatches,
-      weather: state.weather,
-      historyEvents: state.historyEvents,
-      snapshots: state.snapshots,
-      blindSpots: state.blindSpots,
-      currentTime: state.simulation.globalTime,
-    };
+    const domainCtx = buildDomainContext(state);
 
-    const preRiskScore = warning.riskLevel === 'critical' ? 85 : warning.riskLevel === 'high' ? 60 : warning.riskLevel === 'medium' ? 35 : 10;
-
-    const record: DisposalRecord = {
-      id: uuidv4(),
-      warningId,
-      actionType,
-      executedAt: state.simulation.globalTime,
-      preRiskScore,
-      postRiskScore: preRiskScore,
-      improvementDelta: 0,
-      improved: false,
-      details,
-      relatedWarningIds: [warningId],
-    };
-
-    const evaluatedRecord = evaluateDisposal(record, state.warnings, ctx);
+    const record = createDisposalRecord(warningId, actionType, details, state.warnings, domainCtx);
+    const evaluatedRecord = evaluateDisposal(record, state.warnings, domainCtx);
 
     get().addHistoryEvent('garrison_dispatch',
       { warningId, actionType, improved: evaluatedRecord.improved },
       `处置执行：${details} - ${evaluatedRecord.improved ? '有效' : '需持续观察'}`
     );
 
-    set((state) => ({
-      disposalRecords: [...state.disposalRecords, evaluatedRecord],
+    set((prevState) => ({
+      disposalRecords: [...prevState.disposalRecords, evaluatedRecord],
     }));
 
-    setTimeout(() => {
-      get().runWarningAssessment();
-    }, 100);
+    get().runWarningAssessment();
   },
 
   dismissLinkage: (triggerId: string) => {
@@ -474,43 +840,23 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
 
   generateTheaterReportAction: () => {
     const state = get();
-    const ctx = {
-      towers: state.towers,
-      missions: state.missions,
-      enemySources: state.enemySources,
-      dispatches: state.dispatches,
-      weather: state.weather,
-      historyEvents: state.historyEvents,
-      snapshots: state.snapshots,
-      blindSpots: state.blindSpots,
-      currentTime: state.simulation.globalTime,
-    };
-
-    const report = generateTheaterReport(
+    const domainCtx = buildDomainContext(state);
+    const theaterCtx = createTheaterContext(
+      domainCtx,
       state.warnings,
       state.disposalRecords,
-      state.theaterZones,
-      ctx
+      state.theaterZones
     );
+
+    const report = generateTheaterReport(theaterCtx);
 
     set({ theaterReport: report });
   },
 
   refreshTheaterZones: () => {
     const state = get();
-    const ctx = {
-      towers: state.towers,
-      missions: state.missions,
-      enemySources: state.enemySources,
-      dispatches: state.dispatches,
-      weather: state.weather,
-      historyEvents: state.historyEvents,
-      snapshots: state.snapshots,
-      blindSpots: state.blindSpots,
-      currentTime: state.simulation.globalTime,
-    };
-
-    const theaterZones = calculateTheaterZones(ctx);
+    const domainCtx = buildDomainContext(state);
+    const theaterZones = calculateTheaterZones(domainCtx);
     set({ theaterZones });
   },
 
@@ -602,7 +948,7 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
       if (source.level.pathStrategy === 'redundant' && paths.length > 1) {
         const extraMissions = paths.slice(1).map(p => ({
           ...createSignalMission(source, p),
-          id: uuidv4(),
+          id: ID.mission(),
         }));
         set((state) => ({
           missions: [...state.missions, mission, ...extraMissions],
@@ -712,7 +1058,7 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
           pathsWithSource.slice(1).forEach(p => {
             allMissions.push({
               ...createSignalMission(source, p),
-              id: uuidv4(),
+              id: ID.mission(),
             });
           });
         }
@@ -886,336 +1232,77 @@ export const useSimulationStore = create<SimulationStore>((set, get) => ({
     const state = get();
     if (state.simulation.status !== 'running' || state.simulation.isReplaying) return;
 
-    const newGlobalTime = state.simulation.globalTime + deltaTime;
-    let updatedTowers = [...state.towers];
-    let updatedMissions = [...state.missions];
-    let updatedDispatches = [...state.dispatches];
-    let updatedWeather = state.weather;
-    let updatedWeatherEvents = [...state.weatherEvents];
-    let updatedEnemySources = [...state.enemySources];
-    let needsPathRecalc = false;
+    const stageCtx: StageContext = {
+      state,
+      addHistory: state.addHistoryEvent,
+    };
 
-    state.dispatches.forEach((dispatch, index) => {
-      if (dispatch.status === 'pending' || dispatch.status === 'active') {
-        const result = applyDispatchEffect(updatedTowers, dispatch, newGlobalTime);
-        updatedTowers = result.towers;
-        
-        if (result.completed) {
-          updatedDispatches[index] = { ...dispatch, status: 'completed' };
-          needsPathRecalc = true;
-          
-          const fromTower = updatedTowers.find(t => t.id === dispatch.fromTowerId);
-          const toTower = updatedTowers.find(t => t.id === dispatch.toTowerId);
-          get().addHistoryEvent('garrison_dispatch', 
-            { dispatchId: dispatch.id, completed: true }, 
-            `驻军到达：${fromTower?.code || ''} → ${toTower?.code || ''}`);
-        } else if (dispatch.status === 'pending') {
-          updatedDispatches[index] = { ...dispatch, status: 'active' };
-        }
-      }
-    });
+    const initial: AdvanceSimulationState = {
+      newGlobalTime: state.simulation.globalTime + deltaTime,
+      towers: [...state.towers],
+      missions: [...state.missions],
+      dispatches: [...state.dispatches],
+      weather: state.weather,
+      weatherEvents: [...state.weatherEvents],
+      enemySources: [...state.enemySources],
+      needsPathRecalc: false,
+      allCompleted: false,
+      hasActiveSources: false,
+      finalStatus: state.simulation.status,
+      evaluationResult: null,
+      showEvaluation: state.showEvaluation,
+    };
 
-    if (state.isDynamicWeather) {
-      const nextWeatherEvent = state.weatherForecast.find(e => 
-        e.startTime <= newGlobalTime && e.startTime > state.simulation.globalTime
-      );
-      
-      if (nextWeatherEvent) {
-        const oldWeather = state.weather;
-        
-        if (oldWeather.visibilityFactor < 0.8) {
-          const oldEvent = state.weatherEvents.find(e => 
-            e.weather.id === oldWeather.id && e.startTime <= newGlobalTime
-          );
-          if (oldEvent) {
-            updatedTowers = recoverFromWeather(updatedTowers, oldEvent.affectedTowers);
-            oldEvent.affectedTowers.forEach(towerId => {
-              get().addHistoryEvent('tower_recovered', { towerId }, 
-                `${updatedTowers.find(t => t.id === towerId)?.code || ''} 从天气影响中恢复`);
-            });
-          }
-        }
+    const result = [
+      processDispatchStage,
+      processWeatherStage,
+      processTowerStatusStage,
+      processAutoDispatchStage,
+      processMissionProgressStage,
+      processCompletionStage,
+    ].reduce((acc, stage) => stage(stageCtx, acc), initial);
 
-        const eventWithTowers = createWeatherEvent(
-          nextWeatherEvent.weather,
-          nextWeatherEvent.startTime,
-          nextWeatherEvent.duration,
-          updatedTowers,
-          'automatic'
-        );
-        updatedWeatherEvents = [...updatedWeatherEvents, eventWithTowers];
-        updatedWeather = nextWeatherEvent.weather;
-
-        if (nextWeatherEvent.weather.visibilityFactor < 0.8) {
-          updatedTowers = applyWeatherEffect(updatedTowers, nextWeatherEvent.weather, eventWithTowers.affectedTowers);
-          eventWithTowers.affectedTowers.forEach(towerId => {
-            const tower = updatedTowers.find(t => t.id === towerId);
-            if (tower?.isDisabled) {
-              get().addHistoryEvent('tower_disabled', 
-                { towerId, reason: tower.disabledReason }, 
-                `${tower.code} 因天气故障：${tower.disabledReason}`);
-            }
-          });
-        }
-
-        get().addHistoryEvent('weather_change', 
-          { oldWeather: oldWeather.id, newWeather: updatedWeather.id }, 
-          `天气变化：${oldWeather.name} → ${updatedWeather.name}`);
-
-        const { needRecalc, interrupted } = recalculatePathsOnWeatherChange(
-          updatedMissions, updatedTowers, updatedWeather
-        );
-
-        interrupted.forEach(missionId => {
-          const missionIndex = updatedMissions.findIndex(m => m.id === missionId);
-          if (missionIndex !== -1) {
-            const mission = updatedMissions[missionIndex];
-            const altMission = findAlternativePathForMission(
-              mission, updatedTowers, updatedWeather, buildAdjacencyList
-            );
-            
-            if (altMission) {
-              updatedMissions[missionIndex] = altMission;
-              get().addHistoryEvent('path_recalculated', 
-                { missionId, oldPath: mission.path.towers, newPath: altMission.path.towers }, 
-                `路径重算：为任务找到备用路线`);
-            } else {
-              updatedMissions[missionIndex] = { ...mission, status: 'failed', failedReason: '天气导致路径中断，无备用路线' };
-              get().addHistoryEvent('signal_failed', 
-                { missionId, reason: 'weather_interruption' }, 
-                `信号传递失败：天气导致路径中断`);
-            }
-          }
-        });
-
-        needsPathRecalc = needsPathRecalc || needRecalc.length > 0;
-      }
-    }
-
-    updatedTowers = updatedTowers.map(tower => {
-      if (tower.isDisabled && tower.disabledUntil && tower.disabledUntil <= newGlobalTime) {
-        get().addHistoryEvent('tower_recovered', { towerId: tower.id }, 
-          `${tower.code} 恢复正常运行`);
-        return {
-          ...tower,
-          isDisabled: false,
-          disabledReason: undefined,
-          disabledUntil: undefined,
-        };
-      }
-      
-      if (!tower.isDisabled && tower.isActive && tower.garrisonCount > 0) {
-        if (Math.random() < TOWER_FAILURE_PROBABILITY * deltaTime) {
-          const reasons = ['烽火台失火', '士兵突发疾病', '设备损坏', '遭遇小股敌军偷袭'];
-          const reason = reasons[Math.floor(Math.random() * reasons.length)];
-          get().addHistoryEvent('tower_disabled', 
-            { towerId: tower.id, reason }, 
-            `${tower.code} 故障：${reason}`);
-          return {
-            ...tower,
-            isDisabled: true,
-            disabledReason: reason,
-            disabledUntil: newGlobalTime + TOWER_RECOVERY_TIME,
-          };
-        }
-      }
-      
-      return tower;
-    });
-
-    if (state.autoDispatch && newGlobalTime % 10 < deltaTime) {
-      const weakTowers = findWeakTowers(updatedTowers, updatedMissions);
-      const autoDispatches = findAutoDispatchCandidates(updatedTowers, weakTowers, newGlobalTime);
-      
-      autoDispatches.forEach(dispatch => {
-        const exists = updatedDispatches.some(d => 
-          d.fromTowerId === dispatch.fromTowerId && 
-          d.toTowerId === dispatch.toTowerId &&
-          d.status !== 'completed'
-        );
-        
-        if (!exists) {
-          const fromTower = updatedTowers.find(t => t.id === dispatch.fromTowerId);
-          const toTower = updatedTowers.find(t => t.id === dispatch.toTowerId);
-          get().addHistoryEvent('garrison_dispatch', 
-            { dispatchId: dispatch.id, from: dispatch.fromTowerId, to: dispatch.toTowerId, count: dispatch.count, auto: true }, 
-            `自动调度：${fromTower?.code || ''} → ${toTower?.code || ''} (${dispatch.count}人) - ${dispatch.reason}`);
-          updatedDispatches.push(dispatch);
-        }
-      });
-    }
-
-    updatedMissions = updatedMissions.map(mission => {
-      if (mission.status !== 'running') return mission;
-
-      const source = updatedEnemySources.find(s => s.id === mission.enemySourceId);
-      if (!source) return mission;
-
-      const { currentStep, currentTime, activeTowers } = mission;
-      const path = mission.path.towers;
-
-      if (currentStep >= path.length - 1) {
-        get().addHistoryEvent('signal_complete', 
-          { missionId: mission.id, sourceId: mission.enemySourceId }, 
-          `信号传递完成：${source.name}`);
-        
-        const sourceIndex = updatedEnemySources.findIndex(s => s.id === mission.enemySourceId);
-        if (sourceIndex !== -1) {
-          updatedEnemySources[sourceIndex] = { ...updatedEnemySources[sourceIndex], status: 'completed' };
-        }
-        
-        return {
-          ...mission,
-          status: 'completed',
-          signalProgress: 1,
-          endTime: newGlobalTime,
-        };
-      }
-
-      const currentTowerId = path[currentStep];
-      const currentTower = updatedTowers.find(t => t.id === currentTowerId);
-      const nextTowerId = path[currentStep + 1];
-      const nextTower = updatedTowers.find(t => t.id === nextTowerId);
-
-      if (!currentTower || !nextTower) return mission;
-
-      if (currentTower.isDisabled || nextTower.isDisabled) {
-        const altMission = findAlternativePathForMission(
-          mission, updatedTowers, updatedWeather, buildAdjacencyList
-        );
-        
-        if (altMission) {
-          get().addHistoryEvent('path_recalculated', 
-            { missionId: mission.id, reason: 'tower_disabled' }, 
-            `路径重算：${currentTower.isDisabled ? currentTower.code : nextTower.code} 故障，切换备用路线`);
-          return { ...altMission, interruptions: mission.interruptions + 1 };
-        } else {
-          get().addHistoryEvent('signal_failed', 
-            { missionId: mission.id, reason: 'tower_failure' }, 
-            `信号传递失败：${currentTower.isDisabled ? currentTower.code : nextTower.code} 故障，无备用路线`);
-          return { ...mission, status: 'failed', failedReason: '中继台故障，无备用路线' };
-        }
-      }
-
-      if (!canTransmit(currentTower, nextTower, updatedWeather.visibilityFactor)) {
-        const altMission = findAlternativePathForMission(
-          mission, updatedTowers, updatedWeather, buildAdjacencyList
-        );
-        
-        if (altMission) {
-          get().addHistoryEvent('path_recalculated', 
-            { missionId: mission.id, reason: 'out_of_range' }, 
-            `路径重算：${currentTower.code} 无法到达 ${nextTower.code}，切换备用路线`);
-          return { ...altMission, interruptions: mission.interruptions + 1 };
-        } else {
-          get().addHistoryEvent('signal_failed', 
-            { missionId: mission.id, reason: 'out_of_range' }, 
-            `信号传递失败：超出可视范围，无备用路线`);
-          return { ...mission, status: 'failed', failedReason: '超出可视范围，无备用路线' };
-        }
-      }
-
-      const effectiveDelay = getEffectiveDelay(
-        currentTower.signalDelay,
-        source.level,
-        currentTower.garrisonCount,
-        currentTower.baseGarrisonCount
-      );
-
-      const newTime = currentTime + deltaTime;
-
-      if (newTime >= effectiveDelay) {
-        const nextStep = currentStep + 1;
-        const nextActiveTowers = [...activeTowers, path[nextStep]];
-        
-        get().addHistoryEvent('signal_reach', 
-          { missionId: mission.id, towerId: path[nextStep] }, 
-          `信号到达：${nextTower.code}`);
-
-        return {
-          ...mission,
-          currentStep: nextStep,
-          currentTime: newTime - effectiveDelay,
-          activeTowers: nextActiveTowers,
-          signalProgress: nextStep / (path.length - 1),
-        };
-      } else {
-        const progress = currentStep / (path.length - 1);
-        const stepProgress = newTime / effectiveDelay;
-        const totalProgress = progress + stepProgress / (path.length - 1);
-
-        return {
-          ...mission,
-          currentTime: newTime,
-          signalProgress: Math.min(1, totalProgress),
-        };
-      }
-    });
-
-    if (needsPathRecalc) {
-      const adjacency = buildAdjacencyList(updatedTowers, updatedWeather.visibilityFactor, 1);
-      const firstSource = updatedEnemySources.find(s => s.status !== 'merged' && s.status !== 'failed');
+    if (result.needsPathRecalc) {
+      const adjacency = buildAdjacencyList(result.towers, result.weather.visibilityFactor, 1);
+      const firstSource = result.enemySources.find(s => s.status !== 'merged' && s.status !== 'failed');
       if (firstSource) {
-        const blindSpots = findBlindSpots(updatedTowers, firstSource.startTowerId, adjacency).map(b => ({
+        const blindSpots = findBlindSpots(result.towers, firstSource.startTowerId, adjacency).map(b => ({
           ...b,
-          firstDetected: newGlobalTime,
+          firstDetected: result.newGlobalTime,
         }));
-        const towerDelays = analyzeTowerDelays(updatedTowers, state.paths, 5).map(d => ({
+        const towerDelays = analyzeTowerDelays(result.towers, state.paths, 5).map(d => ({
           ...d,
-          missionCount: updatedMissions.filter(m => m.path.towers.includes(d.towerId)).length,
+          missionCount: result.missions.filter(m => m.path.towers.includes(d.towerId)).length,
         }));
         set({ blindSpots, towerDelays });
       }
     }
 
-    const allCompleted = updatedMissions.every(m => m.status === 'completed' || m.status === 'failed');
-    const hasActiveSources = updatedEnemySources.some(s => s.status === 'active' || s.status === 'pending');
-
-    let newStatus: SimulationState['status'] = state.simulation.status;
-    if (allCompleted && hasActiveSources) {
-      newStatus = 'completed';
-      
-      get().addHistoryEvent('simulation_end', {}, '联防调度模拟结束');
-
-      const evaluation = calculateEvaluationResult(
-        newGlobalTime,
-        updatedEnemySources,
-        updatedMissions,
-        updatedTowers,
-        updatedDispatches,
-        updatedWeatherEvents,
-        [...state.historyEvents],
-        state.blindSpots,
-        state.snapshots
-      );
-
-      set(() => ({
-        evaluationResult: evaluation,
-        showEvaluation: true,
-      }));
-    }
-
-    if (newGlobalTime % SNAPSHOT_INTERVAL < deltaTime) {
+    if (result.newGlobalTime % SNAPSHOT_INTERVAL < deltaTime) {
       get().takeSnapshot();
     }
 
-    if (newGlobalTime % 5 < deltaTime) {
+    if (result.newGlobalTime % 5 < deltaTime) {
       get().runWarningAssessment();
     }
 
-    set((state) => ({
+    set((prev) => ({
       simulation: {
-        ...state.simulation,
-        status: newStatus,
-        globalTime: newGlobalTime,
-        currentTime: state.simulation.currentTime + deltaTime,
+        ...prev.simulation,
+        status: result.finalStatus,
+        globalTime: result.newGlobalTime,
+        currentTime: prev.simulation.currentTime + deltaTime,
       },
-      towers: updatedTowers,
-      missions: updatedMissions,
-      dispatches: updatedDispatches,
-      weather: updatedWeather,
-      weatherEvents: updatedWeatherEvents,
-      enemySources: updatedEnemySources,
+      towers: result.towers,
+      missions: result.missions,
+      dispatches: result.dispatches,
+      weather: result.weather,
+      weatherEvents: result.weatherEvents,
+      enemySources: result.enemySources,
+      ...(result.evaluationResult ? {
+        evaluationResult: result.evaluationResult,
+        showEvaluation: result.showEvaluation,
+      } : {}),
     }));
   },
 
